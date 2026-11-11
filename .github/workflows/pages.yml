@@ -21,24 +21,47 @@ env:
 jobs:
   build:
     runs-on: ubuntu-24.04
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v5
 
-      - name: Install native build dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y ninja-build libx11-dev libgl-dev libwayland-dev
-
       # shaderc pulls in glslang, SPIRV-Tools and Tint and takes a while to
-      # build, so keep the native build directory between runs.
+      # build, so keep the native build directory between runs. On an exact
+      # hit the cached shaderc is used as is, and the native packages and
+      # build below are skipped.
       - name: Cache native shaderc build
+        id: shaderc-cache
         uses: actions/cache@v4
         with:
           path: build
           key: shaderc-${{ runner.os }}-${{ hashFiles('CMakeLists.txt') }}
           restore-keys: shaderc-${{ runner.os }}-
 
+      # The runner's Ubuntu mirrors sometimes fail to resolve, and apt then
+      # retries each package for minutes. Skip apt when the packages are
+      # already installed, otherwise retry with short timeouts.
+      - name: Install native build dependencies
+        if: steps.shaderc-cache.outputs.cache-hit != 'true'
+        timeout-minutes: 10
+        run: |
+          packages="ninja-build libx11-dev libgl-dev libwayland-dev"
+          if dpkg -s $packages >/dev/null 2>&1; then
+            echo "All packages are already installed."
+            exit 0
+          fi
+          apt_options="-o Acquire::Retries=3 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20"
+          for attempt in 1 2 3 4; do
+            if sudo apt-get $apt_options update -q && \
+               sudo apt-get $apt_options install -y -q --no-install-recommends $packages; then
+              exit 0
+            fi
+            echo "apt attempt $attempt failed, retrying in $((attempt * 15)) s."
+            sleep $((attempt * 15))
+          done
+          exit 1
+
       - name: Build native shaderc
+        if: steps.shaderc-cache.outputs.cache-hit != 'true'
         run: |
           cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
           cmake --build build --target shaderc
@@ -50,6 +73,7 @@ jobs:
           key: emsdk-${{ runner.os }}-${{ env.EMSCRIPTEN_VERSION }}
 
       - name: Install Emscripten SDK
+        timeout-minutes: 15
         run: |
           if [ ! -d emsdk ]; then
             git clone --depth 1 https://github.com/emscripten-core/emsdk.git
@@ -60,9 +84,10 @@ jobs:
       - name: Build web
         run: |
           source emsdk/emsdk_env.sh
-          emcmake cmake -S . -B build-web -G Ninja -DCMAKE_BUILD_TYPE=Release \
+          # Default generator: on a shaderc cache hit, ninja is not installed.
+          emcmake cmake -S . -B build-web -DCMAKE_BUILD_TYPE=Release \
             -DRESTIR_HOST_SHADERC="$PWD/build/_deps/bgfx.cmake-build/cmake/bgfx/shaderc"
-          cmake --build build-web
+          cmake --build build-web --parallel "$(nproc)"
 
       - name: Assemble site
         run: |
