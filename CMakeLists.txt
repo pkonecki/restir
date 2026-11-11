@@ -196,16 +196,28 @@ if(EMSCRIPTEN)
 		${BGFX_RUNTIME_SHADERS}
 	)
 else()
-	add_custom_command(
-		TARGET restir_gi POST_BUILD
-		COMMAND ${CMAKE_COMMAND} -E copy_directory
+	# Copy the shaders and models beside the executable on every build, not
+	# only when it relinks, so that a changed shader or a model fetched later
+	# (cmake/fetch_sponza.cmake) shows up after the next build.
+	if(CMAKE_VERSION VERSION_GREATER_EQUAL 3.26)
+		set(RESTIR_COPY_DIRECTORY copy_directory_if_different)
+	else()
+		set(RESTIR_COPY_DIRECTORY copy_directory)
+	endif()
+	add_custom_target(restir_gi_runtime_files ALL
+		COMMAND ${CMAKE_COMMAND} -E ${RESTIR_COPY_DIRECTORY}
 			"${BGFX_SHADER_OUTPUT_DIR}"
 			"$<TARGET_FILE_DIR:restir_gi>/shaders"
-		COMMAND ${CMAKE_COMMAND} -E copy_directory
+		COMMAND ${CMAKE_COMMAND} -E ${RESTIR_COPY_DIRECTORY}
 			"${CMAKE_CURRENT_SOURCE_DIR}/assets"
 			"$<TARGET_FILE_DIR:restir_gi>/assets"
+		DEPENDS ${BGFX_RUNTIME_SHADERS}
+		COMMENT "Copying shaders and assets beside restir_gi"
 		VERBATIM
 	)
+	# Building restir_gi alone (as the VS Code task does) copies them too.
+	add_dependencies(restir_gi restir_gi_runtime_files)
+	set_target_properties(restir_gi_runtime_files PROPERTIES FOLDER "restir")
 endif()
 
 set_target_properties(restir_gi PROPERTIES

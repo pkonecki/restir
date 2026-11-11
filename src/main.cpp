@@ -2,6 +2,7 @@
 #include "bgfx_utils.h"
 #include "entry/input.h"
 
+#include <bimg/decode.h>
 #include <bx/commandline.h>
 
 #include <fastgltf/core.hpp>
@@ -12,8 +13,10 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdio>
+#include <cstring>
 #include <filesystem>
 #include <limits>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -27,6 +30,7 @@ struct SceneVertex
 	float m_normal[3];
 	float m_color[3];
 	float m_material[2]; // roughness, metallic
+	float m_texcoord[2];
 
 	static void init()
 	{
@@ -36,6 +40,7 @@ struct SceneVertex
 			.add(bgfx::Attrib::Normal,    3, bgfx::AttribType::Float)
 			.add(bgfx::Attrib::Color0,    3, bgfx::AttribType::Float)
 			.add(bgfx::Attrib::TexCoord1, 2, bgfx::AttribType::Float)
+			.add(bgfx::Attrib::TexCoord0, 2, bgfx::AttribType::Float)
 			.end();
 	}
 
@@ -63,10 +68,41 @@ struct FullscreenVertex
 
 bgfx::VertexLayout FullscreenVertex::ms_layout;
 
+// A decoded RGBA8 texture with its full mip chain, down to 1x1, mip 0 first.
+struct SceneImage
+{
+	uint16_t m_width = 0;
+	uint16_t m_height = 0;
+	std::vector<uint8_t> m_data;
+};
+
+struct SceneMaterial
+{
+	int32_t m_baseColorImage = -1;         // index into SceneMesh::m_images, -1: none
+	int32_t m_metallicRoughnessImage = -1; // index into SceneMesh::m_images, -1: none
+	float m_alphaCutoff = 0.0f;            // alpha-masked materials discard texels below it
+	bool m_twoSidedMask = false;           // alpha-masked and double-sided, like foliage cards
+	bool m_metallicTextureMissing = false; // has a metallic-roughness texture that could not be loaded
+};
+
+// A range of the index buffer drawn with one material.
+struct SceneDraw
+{
+	uint32_t m_firstIndex = 0;
+	uint32_t m_indexCount = 0;
+	uint32_t m_material = 0;
+};
+
 struct SceneMesh
 {
 	std::vector<SceneVertex> m_vertices;
-	std::vector<uint32_t> m_indices;
+	std::vector<uint32_t> m_indices; // grouped by material, see m_draws
+	std::vector<SceneDraw> m_draws;
+	std::vector<SceneMaterial> m_materials; // the glTF materials, then a default one
+	std::vector<SceneImage> m_images;
+
+	// Indices of each material while primitives are appended.
+	std::vector<std::vector<uint32_t>> m_materialIndices;
 
 	// World-space bounds of all vertices.
 	bx::Vec3 m_boundsMin = {  std::numeric_limits<float>::max(),  std::numeric_limits<float>::max(),  std::numeric_limits<float>::max() };
@@ -203,6 +239,24 @@ void appendPrimitive(
 	const fastgltf::math::fmat3x3 normalTransform = fastgltf::math::transpose(
 		fastgltf::math::inverse(fastgltf::math::fmat3x3(_transform)));
 
+	// Every material's textures are read with TEXCOORD_0.
+	std::vector<fastgltf::math::fvec2> texcoords(positions.size(), fastgltf::math::fvec2(0.0f));
+	const auto texcoordAttribute = _primitive.findAttribute("TEXCOORD_0");
+	if (texcoordAttribute != _primitive.attributes.end())
+	{
+		const fastgltf::Accessor& accessor = _asset.accessors[texcoordAttribute->accessorIndex];
+		if (accessor.count != positions.size())
+		{
+			throw std::runtime_error("A glTF primitive has mismatched POSITION and TEXCOORD_0 counts.");
+		}
+
+		std::size_t idx = 0;
+		for (const auto& texcoord : fastgltf::iterateAccessor<fastgltf::math::fvec2>(_asset, accessor))
+		{
+			texcoords[idx++] = texcoord;
+		}
+	}
+
 	// glTF material defaults: white, fully rough, fully metallic, not emissive.
 	fastgltf::math::fvec4 baseColor(1.0f);
 	float roughness = 1.0f;
@@ -241,6 +295,8 @@ void appendPrimitive(
 		vertex.m_color[2] = float(baseColor[2]);
 		vertex.m_material[0] = roughness;
 		vertex.m_material[1] = metallic;
+		vertex.m_texcoord[0] = texcoords[idx].x();
+		vertex.m_texcoord[1] = texcoords[idx].y();
 		_mesh.m_vertices.push_back(vertex);
 
 		const bx::Vec3 worldPosition = { position.x(), position.y(), position.z() };
@@ -248,6 +304,11 @@ void appendPrimitive(
 		_mesh.m_boundsMax = bx::max(_mesh.m_boundsMax, worldPosition);
 	}
 
+	// Primitives without a material use the default one, after the glTF ones.
+	const std::size_t materialSlot = _primitive.materialIndex.has_value()
+		? _primitive.materialIndex.value()
+		: _asset.materials.size();
+	std::vector<uint32_t>& materialIndices = _mesh.m_materialIndices[materialSlot];
 	for (const uint32_t index : indices)
 	{
 		if (index >= positions.size())
@@ -255,7 +316,7 @@ void appendPrimitive(
 			throw std::runtime_error("A glTF primitive contains an out-of-range index.");
 		}
 
-		_mesh.m_indices.push_back(uint32_t(baseVertex + index));
+		materialIndices.push_back(uint32_t(baseVertex + index));
 	}
 
 	if (isEmissive)
@@ -283,6 +344,311 @@ void appendPrimitive(
 			_mesh.m_emissiveCentroid = bx::add(_mesh.m_emissiveCentroid, bx::mul(centroid, area));
 			_mesh.m_emissiveNormal = bx::add(_mesh.m_emissiveNormal, bx::mul(normal, area));
 			_mesh.m_emissiveArea += area;
+		}
+	}
+}
+
+// The encoded bytes (PNG, JPEG, ...) of a glTF image: an external file next
+// to the model, or data inside one of its buffers. False if unavailable.
+bool readImageBytes(
+	  const fastgltf::Asset& _asset
+	, const fastgltf::Image& _image
+	, const std::filesystem::path& _directory
+	, std::vector<uint8_t>& _bytes
+	)
+{
+	const auto copyBytes = [&_bytes](const std::byte* _data, std::size_t _size)
+	{
+		_bytes.assign(reinterpret_cast<const uint8_t*>(_data), reinterpret_cast<const uint8_t*>(_data) + _size);
+		return _size > 0;
+	};
+
+	if (const auto* uri = std::get_if<fastgltf::sources::URI>(&_image.data))
+	{
+		if (!uri->uri.isLocalPath())
+		{
+			return false;
+		}
+
+		std::FILE* file = std::fopen((_directory / uri->uri.fspath()).string().c_str(), "rb");
+		if (file == nullptr)
+		{
+			return false;
+		}
+
+		std::fseek(file, 0, SEEK_END);
+		const long size = std::ftell(file);
+		std::fseek(file, long(uri->fileByteOffset), SEEK_SET);
+		_bytes.resize(size > long(uri->fileByteOffset) ? std::size_t(size - long(uri->fileByteOffset)) : 0);
+		const std::size_t read = _bytes.empty() ? 0 : std::fread(_bytes.data(), 1, _bytes.size(), file);
+		std::fclose(file);
+		return read == _bytes.size() && !_bytes.empty();
+	}
+
+	if (const auto* array = std::get_if<fastgltf::sources::Array>(&_image.data))
+	{
+		return copyBytes(array->bytes.data(), array->bytes.size());
+	}
+
+	if (const auto* vector = std::get_if<fastgltf::sources::Vector>(&_image.data))
+	{
+		return copyBytes(vector->bytes.data(), vector->bytes.size());
+	}
+
+	if (const auto* view = std::get_if<fastgltf::sources::BufferView>(&_image.data))
+	{
+		const fastgltf::BufferView& bufferView = _asset.bufferViews[view->bufferViewIndex];
+		const fastgltf::Buffer& buffer = _asset.buffers[bufferView.bufferIndex];
+		const std::byte* data = nullptr;
+		std::size_t size = 0;
+		if (const auto* bufferArray = std::get_if<fastgltf::sources::Array>(&buffer.data))
+		{
+			data = bufferArray->bytes.data();
+			size = bufferArray->bytes.size();
+		}
+		else if (const auto* bufferVector = std::get_if<fastgltf::sources::Vector>(&buffer.data))
+		{
+			data = bufferVector->bytes.data();
+			size = bufferVector->bytes.size();
+		}
+
+		if (data == nullptr || bufferView.byteOffset + bufferView.byteLength > size)
+		{
+			return false;
+		}
+
+		return copyBytes(data + bufferView.byteOffset, bufferView.byteLength);
+	}
+
+	return false;
+}
+
+// Halves an RGBA8 image (rounding odd sizes down, but never below 1). Colour
+// textures are averaged in linear space, so the mips do not darken; their
+// shaders decode them with the same 2.2 gamma.
+void downsampleRgba8(
+	  const uint8_t* _src
+	, uint32_t _srcWidth
+	, uint32_t _srcHeight
+	, uint8_t* _dst
+	, uint32_t _dstWidth
+	, uint32_t _dstHeight
+	, bool _gamma
+	)
+{
+	static float s_toLinear[256];
+	static uint8_t s_toGamma[4096];
+	static bool s_tablesReady = false;
+	if (!s_tablesReady)
+	{
+		for (uint32_t idx = 0; idx < 256; ++idx)
+		{
+			s_toLinear[idx] = std::pow(float(idx) / 255.0f, 2.2f);
+		}
+		for (uint32_t idx = 0; idx < 4096; ++idx)
+		{
+			s_toGamma[idx] = uint8_t(std::lround(std::pow(float(idx) / 4095.0f, 1.0f / 2.2f) * 255.0f));
+		}
+		s_tablesReady = true;
+	}
+
+	for (uint32_t y = 0; y < _dstHeight; ++y)
+	{
+		const uint32_t y0 = std::min(2 * y, _srcHeight - 1);
+		const uint32_t y1 = std::min(2 * y + 1, _srcHeight - 1);
+		for (uint32_t x = 0; x < _dstWidth; ++x)
+		{
+			const uint32_t x0 = std::min(2 * x, _srcWidth - 1);
+			const uint32_t x1 = std::min(2 * x + 1, _srcWidth - 1);
+			const uint8_t* taps[4] =
+			{
+				_src + (y0 * _srcWidth + x0) * 4, _src + (y0 * _srcWidth + x1) * 4,
+				_src + (y1 * _srcWidth + x0) * 4, _src + (y1 * _srcWidth + x1) * 4,
+			};
+
+			uint8_t* out = _dst + (y * _dstWidth + x) * 4;
+			for (uint32_t channel = 0; channel < 4; ++channel)
+			{
+				if (_gamma && channel < 3)
+				{
+					float sum = 0.0f;
+					for (const uint8_t* tap : taps)
+					{
+						sum += s_toLinear[tap[channel]];
+					}
+					out[channel] = s_toGamma[std::min(uint32_t(sum * 0.25f * 4095.0f + 0.5f), 4095u)];
+				}
+				else
+				{
+					uint32_t sum = 0;
+					for (const uint8_t* tap : taps)
+					{
+						sum += tap[channel];
+					}
+					out[channel] = uint8_t((sum + 2) / 4);
+				}
+			}
+		}
+	}
+}
+
+// Decodes an image to RGBA8 and appends its mip chain. _gamma is true for
+// colour textures (sRGB-encoded) and false for data such as metallic-roughness.
+bool decodeImage(const std::vector<uint8_t>& _bytes, bool _gamma, SceneImage& _image)
+{
+	bimg::ImageContainer* container = bimg::imageParse(
+		  entry::getAllocator()
+		, _bytes.data()
+		, uint32_t(_bytes.size())
+		, bimg::TextureFormat::RGBA8
+		);
+	if (container == nullptr)
+	{
+		return false;
+	}
+
+	const bool valid = container->m_format == bimg::TextureFormat::RGBA8
+		&& container->m_width > 0 && container->m_height > 0
+		&& container->m_width <= 16384 && container->m_height <= 16384
+		// bimg reports a depth of 0 for 2D images.
+		&& container->m_depth <= 1 && container->m_numLayers == 1 && !container->m_cubeMap;
+	if (!valid)
+	{
+		bimg::imageFree(container);
+		return false;
+	}
+
+	uint32_t width = container->m_width;
+	uint32_t height = container->m_height;
+	_image.m_width = uint16_t(width);
+	_image.m_height = uint16_t(height);
+
+	// Size of the whole chain: every level halves, down to 1x1.
+	std::size_t total = 0;
+	for (uint32_t levelWidth = width, levelHeight = height; ; )
+	{
+		total += std::size_t(levelWidth) * levelHeight * 4;
+		if (levelWidth == 1 && levelHeight == 1)
+		{
+			break;
+		}
+		levelWidth = std::max(levelWidth / 2, 1u);
+		levelHeight = std::max(levelHeight / 2, 1u);
+	}
+
+	_image.m_data.resize(total);
+	const std::size_t level0Size = std::size_t(width) * height * 4;
+	std::memcpy(_image.m_data.data(), container->m_data, level0Size);
+	bimg::imageFree(container);
+
+	std::size_t offset = 0;
+	while (width > 1 || height > 1)
+	{
+		const uint32_t nextWidth = std::max(width / 2, 1u);
+		const uint32_t nextHeight = std::max(height / 2, 1u);
+		const std::size_t levelSize = std::size_t(width) * height * 4;
+		downsampleRgba8(
+			  _image.m_data.data() + offset, width, height
+			, _image.m_data.data() + offset + levelSize, nextWidth, nextHeight
+			, _gamma
+			);
+		offset += levelSize;
+		width = nextWidth;
+		height = nextHeight;
+	}
+
+	return true;
+}
+
+// The glTF image a texture slot of a material refers to, if any.
+std::optional<std::size_t> textureImage(const fastgltf::Asset& _asset, const fastgltf::Optional<fastgltf::TextureInfo>& _info)
+{
+	if (!_info.has_value() || _info->textureIndex >= _asset.textures.size())
+	{
+		return std::nullopt;
+	}
+
+	const fastgltf::Texture& texture = _asset.textures[_info->textureIndex];
+	if (!texture.imageIndex.has_value() || texture.imageIndex.value() >= _asset.images.size())
+	{
+		return std::nullopt;
+	}
+
+	return texture.imageIndex.value();
+}
+
+// Reads the materials of a model and decodes the textures they use. Images
+// that cannot be read or decoded are skipped with a warning; the material
+// then uses its factors alone.
+void loadMaterials(const fastgltf::Asset& _asset, const std::filesystem::path& _directory, SceneMesh& _mesh)
+{
+	_mesh.m_materials.resize(_asset.materials.size() + 1);
+	_mesh.m_materialIndices.resize(_asset.materials.size() + 1);
+
+	// Decode each image once, as colour if any material uses it as such.
+	std::vector<int8_t> imageUse(_asset.images.size(), 0); // 0: unused, 1: data, 2: colour
+	for (const fastgltf::Material& material : _asset.materials)
+	{
+		if (const auto image = textureImage(_asset, material.pbrData.baseColorTexture))
+		{
+			imageUse[*image] = 2;
+		}
+		if (const auto image = textureImage(_asset, material.pbrData.metallicRoughnessTexture))
+		{
+			imageUse[*image] = std::max<int8_t>(imageUse[*image], 1);
+		}
+	}
+
+	std::vector<int32_t> imageSlots(_asset.images.size(), -1);
+	uint32_t failed = 0;
+	std::vector<uint8_t> bytes;
+	for (std::size_t idx = 0; idx < _asset.images.size(); ++idx)
+	{
+		if (imageUse[idx] == 0)
+		{
+			continue;
+		}
+
+		SceneImage image;
+		if (readImageBytes(_asset, _asset.images[idx], _directory, bytes)
+		&&  decodeImage(bytes, imageUse[idx] == 2, image))
+		{
+			imageSlots[idx] = int32_t(_mesh.m_images.size());
+			_mesh.m_images.push_back(std::move(image));
+		}
+		else
+		{
+			++failed;
+		}
+	}
+
+	if (failed > 0)
+	{
+		std::fprintf(stderr, "%u of the model's textures could not be loaded; those materials use their factors alone.\n", failed);
+	}
+
+	for (std::size_t idx = 0; idx < _asset.materials.size(); ++idx)
+	{
+		const fastgltf::Material& source = _asset.materials[idx];
+		SceneMaterial& material = _mesh.m_materials[idx];
+
+		if (const auto image = textureImage(_asset, source.pbrData.baseColorTexture))
+		{
+			material.m_baseColorImage = imageSlots[*image];
+		}
+		if (const auto image = textureImage(_asset, source.pbrData.metallicRoughnessTexture))
+		{
+			material.m_metallicRoughnessImage = imageSlots[*image];
+			// Models with a metallic-roughness texture usually leave the
+			// metallic factor at its default of 1 and keep the metal mask in the
+			// texture. Without the texture, the factor alone would make the
+			// material bare metal (no diffuse light at all).
+			material.m_metallicTextureMissing = material.m_metallicRoughnessImage < 0;
+		}
+		if (source.alphaMode == fastgltf::AlphaMode::Mask)
+		{
+			material.m_alphaCutoff = float(source.alphaCutoff);
+			material.m_twoSidedMask = source.doubleSided;
 		}
 	}
 }
@@ -324,6 +690,7 @@ SceneMesh loadScene(const std::filesystem::path& _path)
 	}
 
 	SceneMesh mesh;
+	loadMaterials(asset, _path.parent_path(), mesh);
 	fastgltf::iterateSceneNodes(
 		  asset
 		, sceneIndex
@@ -347,6 +714,24 @@ SceneMesh loadScene(const std::filesystem::path& _path)
 			}
 		}
 		);
+
+	// One draw per material, over consecutive indices.
+	for (uint32_t material = 0; material < mesh.m_materialIndices.size(); ++material)
+	{
+		std::vector<uint32_t>& indices = mesh.m_materialIndices[material];
+		if (indices.empty())
+		{
+			continue;
+		}
+
+		SceneDraw draw;
+		draw.m_firstIndex = uint32_t(mesh.m_indices.size());
+		draw.m_indexCount = uint32_t(indices.size());
+		draw.m_material = material;
+		mesh.m_draws.push_back(draw);
+		mesh.m_indices.insert(mesh.m_indices.end(), indices.begin(), indices.end());
+		std::vector<uint32_t>().swap(indices);
+	}
 
 	if (mesh.m_vertices.empty() || mesh.m_indices.empty())
 	{
@@ -417,10 +802,29 @@ constexpr uint8_t kGridFragmentStage = 11; // 11-13
 
 constexpr float kCameraFovY = 48.0f;
 
-// Orbit camera distances, in scene radii.
-constexpr float kInitialCameraDistance = 3.17f;
-constexpr float kMinCameraDistance = 1.8f;
-constexpr float kMaxCameraDistance = 5.2f;
+// Camera start, in scene radii from the centre of the scene, and speed.
+constexpr float kInitialCameraDistance = 3.17f; // outside the scene, for open models like the Cornell box
+constexpr float kCameraSpeed = 0.4f;            // scene radii per second, before the wheel's scale
+
+constexpr float kInitialCameraYaw = 0.64f;
+constexpr float kInitialCameraPitch = 0.255f;
+
+// Models offered by the M key when they are present, with where the camera
+// starts. Sponza is closed all around, so the camera starts inside its
+// courtyard, looking down its long (x) axis. It is not committed (see
+// cmake/fetch_sponza.cmake), so it only shows up once fetched.
+struct BundledModel
+{
+	const char* m_path;
+	float m_cameraDistance; // in scene radii
+	float m_cameraYaw;      // radians, 0 = camera on +z
+};
+
+constexpr BundledModel kBundledModels[] =
+{
+	{ "assets/cornell_box/scene.gltf", kInitialCameraDistance, kInitialCameraYaw },
+	{ "assets/sponza/Sponza.gltf",     0.45f,                  1.5708f },
+};
 
 class ExampleRestirGi : public entry::AppI
 {
@@ -460,9 +864,8 @@ public:
 		, m_frameInfo(BGFX_INVALID_HANDLE)
 		, m_screenInfo(BGFX_INVALID_HANDLE)
 		, m_sceneInfoUniform(BGFX_INVALID_HANDLE)
-		, m_cameraYaw(0.64f)
-		, m_cameraPitch(0.255f)
-		, m_cameraDistance(1.0f)
+		, m_cameraYaw(kInitialCameraYaw)
+		, m_cameraPitch(kInitialCameraPitch)
 		, m_frameNumber(0)
 		, m_lastMouseX(0)
 		, m_lastMouseY(0)
@@ -515,7 +918,24 @@ public:
 	{
 		Args args(_argc, _argv);
 		bx::CommandLine commandLine(_argc, _argv);
-		const char* modelPath = commandLine.findOption("model", "assets/cornell_box/scene.gltf");
+		// M cycles through the models: the one passed with --model (if any),
+		// then the bundled ones that are present.
+		if (const char* modelOption = commandLine.findOption("model"))
+		{
+			m_modelPaths.push_back(modelOption);
+		}
+		for (const BundledModel& bundled : kBundledModels)
+		{
+			if (std::filesystem::exists(bundled.m_path)
+			&&  std::find(m_modelPaths.begin(), m_modelPaths.end(), bundled.m_path) == m_modelPaths.end())
+			{
+				m_modelPaths.push_back(bundled.m_path);
+			}
+		}
+		if (m_modelPaths.empty())
+		{
+			throw std::runtime_error("No model found: pass one with --model.");
+		}
 
 		m_width  = _width;
 		m_height = _height;
@@ -561,18 +981,18 @@ public:
 			throw std::runtime_error("World-space ReSTIR GI requires compute shaders.");
 		}
 
-		const SceneMesh mesh = loadScene(modelPath);
-		m_scene = describeScene(mesh);
-		m_cameraDistance = kInitialCameraDistance * m_scene.m_radius;
+		// Materials: a white texture stands in for missing ones, so the
+		// factors apply unchanged.
+		m_baseColorSampler = bgfx::createUniform("s_baseColor", bgfx::UniformType::Sampler);
+		m_metallicRoughnessSampler = bgfx::createUniform("s_metallicRoughness", bgfx::UniformType::Sampler);
+		m_materialInfoUniform = bgfx::createUniform("u_materialInfo", bgfx::UniformType::Vec4);
+		const uint32_t white = 0xffffffff;
+		m_whiteTexture = bgfx::createTexture2D(1, 1, false, 1, bgfx::TextureFormat::RGBA8, 0, bgfx::copy(&white, sizeof(white)));
 
-		m_vbh = bgfx::createVertexBuffer(
-			  bgfx::copy(mesh.m_vertices.data(), uint32_t(mesh.m_vertices.size() * sizeof(SceneVertex)))
-			, SceneVertex::ms_layout
-			);
-		m_ibh = bgfx::createIndexBuffer(
-			  bgfx::copy(mesh.m_indices.data(), uint32_t(mesh.m_indices.size() * sizeof(uint32_t)))
-			, BGFX_BUFFER_INDEX32
-			);
+		// The first model must load; a failure while switching later only
+		// keeps the current one.
+		setModel(0, loadScene(m_modelPaths[0]));
+
 		const FullscreenVertex fullscreenVertices[] =
 		{
 			{ { -1.0f, -1.0f, 0.0f }, { 0.0f, bgfx::getCaps()->originBottomLeft ? 0.0f : 1.0f } },
@@ -684,7 +1104,13 @@ public:
 			m_giNormalSampler, m_filterInputSampler, m_atrousInfoUniform,
 			m_reservoirSampleSampler, m_reservoirReceiverSampler, m_reservoirNormalSampler,
 			m_gridInfoUniform, m_gridCameraUniform,
+			m_baseColorSampler, m_metallicRoughnessSampler, m_materialInfoUniform,
 		};
+		destroyModelTextures();
+		if (bgfx::isValid(m_whiteTexture))
+		{
+			bgfx::destroy(m_whiteTexture);
+		}
 		for (const bgfx::UniformHandle uniform : uniforms)
 		{
 			if (bgfx::isValid(uniform))
@@ -756,16 +1182,17 @@ public:
 		}
 		m_bounceKeyDown = bounceKeyDown;
 
-		const bool shadowKeyDown = inputGetKeyState(entry::Key::KeyS);
+		// H toggles shadows (WASD move the camera).
+		const bool shadowKeyDown = inputGetKeyState(entry::Key::KeyH);
 		if (shadowKeyDown && !m_shadowKeyDown)
 		{
 			m_shadowsEnabled = !m_shadowsEnabled;
 		}
 		m_shadowKeyDown = shadowKeyDown;
 
-		// D toggles the denoiser. The history means something different with
+		// N toggles the denoiser. The history means something different with
 		// and without it (filtered or not), so restart accumulation.
-		const bool denoiseKeyDown = inputGetKeyState(entry::Key::KeyD);
+		const bool denoiseKeyDown = inputGetKeyState(entry::Key::KeyN);
 		if (denoiseKeyDown && !m_denoiseKeyDown)
 		{
 			m_denoiseEnabled = !m_denoiseEnabled;
@@ -783,15 +1210,37 @@ public:
 		}
 		m_gridKeyDown = gridKeyDown;
 
+		const bool modelKeyDown = inputGetKeyState(entry::Key::KeyM);
+		if (modelKeyDown && !m_modelKeyDown && m_modelPaths.size() > 1)
+		{
+			switchModel((m_modelIndex + 1) % m_modelPaths.size());
+		}
+		m_modelKeyDown = modelKeyDown;
+
 		bgfx::dbgTextClear();
 		bgfx::dbgTextPrintf(0, 1, 0x0f, "Indirect light: %s (B to toggle)"
 			, m_multipleBounces ? "multiple bounces" : "single bounce");
-		bgfx::dbgTextPrintf(0, 2, 0x0f, "Shadows: %s (S to toggle)"
+		bgfx::dbgTextPrintf(0, 2, 0x0f, "Shadows: %s (H to toggle)"
 			, m_shadowsEnabled ? "on" : "off");
-		bgfx::dbgTextPrintf(0, 3, 0x0f, "Denoiser: %s (D to toggle)"
+		bgfx::dbgTextPrintf(0, 3, 0x0f, "Denoiser: %s (N to toggle)"
 			, m_denoiseEnabled ? "on" : "off");
 		bgfx::dbgTextPrintf(0, 4, 0x0f, "Reservoir reuse: %s (G to toggle)"
 			, m_worldSpaceReuse ? "world-space hash grid" : "screen-space");
+		if (m_modelPaths.size() > 1)
+		{
+			bgfx::dbgTextPrintf(0, 5, 0x0f, "Model %u/%u: %s (M to switch)"
+				, uint32_t(m_modelIndex + 1), uint32_t(m_modelPaths.size()), m_modelPaths[m_modelIndex].c_str());
+		}
+		else
+		{
+			bgfx::dbgTextPrintf(0, 5, 0x0f, "Model: %s", m_modelPaths[m_modelIndex].c_str());
+		}
+		bgfx::dbgTextPrintf(0, 6, 0x0f
+			, "Camera: WASD move, Shift/Ctrl up/down, drag to look, wheel for speed (x%.2f)", m_moveSpeedScale);
+		if (!m_modelError.empty())
+		{
+			bgfx::dbgTextPrintf(0, 7, 0x0c, "%s", m_modelError.c_str());
+		}
 
 		if (m_width == 0 || m_height == 0)
 		{
@@ -803,25 +1252,21 @@ public:
 			createRenderTargets(m_width, m_height);
 		}
 
-		const bx::Vec3 at = m_scene.m_center;
 		const float radius = m_scene.m_radius;
-		const float horizontalDistance = m_cameraDistance * std::cos(m_cameraPitch);
-		const bx::Vec3 eye =
-		{
-			at.x + horizontalDistance * std::sin(m_cameraYaw),
-			at.y + m_cameraDistance * std::sin(m_cameraPitch),
-			at.z + horizontalDistance * std::cos(m_cameraYaw),
-		};
+		const bx::Vec3 eye = m_eye;
+		const bx::Vec3 at = bx::add(eye, cameraForward());
 		float view[16];
 		float projection[16];
 		// glTF is right-handed; a left-handed camera would mirror the scene.
 		bx::mtxLookAt(view, eye, at, { 0.0f, 1.0f, 0.0f }, bx::Handedness::Right);
+		// The far plane reaches past the scene from wherever the camera is.
+		const float farPlane = bx::length(bx::sub(eye, m_scene.m_center)) + 2.0f * radius;
 		bx::mtxProj(
 			  projection
 			, kCameraFovY
 			, float(m_width) / float(m_height)
 			, 0.05f * radius
-			, (kMaxCameraDistance + 2.0f) * radius
+			, std::max(farPlane, 2.5f * radius)
 			, bgfx::getCaps()->homogeneousDepth
 			, bx::Handedness::Right
 			);
@@ -907,13 +1352,17 @@ public:
 
 				if (m_shadowsEnabled)
 				{
-					bgfx::setTransform(model);
-					bgfx::setVertexBuffer(0, m_vbh);
-					bgfx::setIndexBuffer(m_ibh);
-					bgfx::setUniform(m_lightPosition, lightPosition);
-					bgfx::setUniform(m_shadowInfoUniform, shadowInfo);
-					bgfx::setState(BGFX_STATE_WRITE_R | BGFX_STATE_WRITE_Z | BGFX_STATE_DEPTH_TEST_LESS);
-					bgfx::submit(viewId, m_shadowProgram);
+					for (const SceneDraw& draw : m_draws)
+					{
+						bgfx::setTransform(model);
+						bgfx::setVertexBuffer(0, m_vbh);
+						bgfx::setIndexBuffer(m_ibh, draw.m_firstIndex, draw.m_indexCount);
+						setMaterial(draw.m_material);
+						bgfx::setUniform(m_lightPosition, lightPosition);
+						bgfx::setUniform(m_shadowInfoUniform, shadowInfo);
+						bgfx::setState(BGFX_STATE_WRITE_R | BGFX_STATE_WRITE_Z | BGFX_STATE_DEPTH_TEST_LESS);
+						bgfx::submit(viewId, m_shadowProgram);
+					}
 				}
 			}
 		}
@@ -923,16 +1372,20 @@ public:
 		bgfx::setViewFrameBuffer(0, m_gbuffer);
 		bgfx::setViewTransform(0, view, projection);
 		bgfx::setViewClear(0, BGFX_CLEAR_COLOR | BGFX_CLEAR_DEPTH, 0x000000ff, 1.0f, 0);
-		bgfx::setTransform(model);
-		bgfx::setVertexBuffer(0, m_vbh);
-		bgfx::setIndexBuffer(m_ibh);
-		bgfx::setState(
-			  BGFX_STATE_WRITE_RGB
-			| BGFX_STATE_WRITE_A
-			| BGFX_STATE_WRITE_Z
-			| BGFX_STATE_DEPTH_TEST_LESS
-			);
-		bgfx::submit(0, m_geometryProgram);
+		for (const SceneDraw& draw : m_draws)
+		{
+			bgfx::setTransform(model);
+			bgfx::setVertexBuffer(0, m_vbh);
+			bgfx::setIndexBuffer(m_ibh, draw.m_firstIndex, draw.m_indexCount);
+			setMaterial(draw.m_material);
+			bgfx::setState(
+				  BGFX_STATE_WRITE_RGB
+				| BGFX_STATE_WRITE_A
+				| BGFX_STATE_WRITE_Z
+				| BGFX_STATE_DEPTH_TEST_LESS
+				);
+			bgfx::submit(0, m_geometryProgram);
+		}
 
 		// This frame's reservoirs, shaded GI and hash grid are written at
 		// historyWrite; last frame's are read from m_historyRead.
@@ -1146,6 +1599,112 @@ public:
 	}
 
 private:
+	void destroyModelTextures()
+	{
+		for (const bgfx::TextureHandle texture : m_modelTextures)
+		{
+			if (bgfx::isValid(texture))
+			{
+				bgfx::destroy(texture);
+			}
+		}
+		m_modelTextures.clear();
+	}
+
+	// Binds a material's textures (white where it has none) and parameters
+	// for the next draw, in the G-buffer or shadow pass.
+	void setMaterial(uint32_t _material)
+	{
+		const SceneMaterial& material = m_materials[_material];
+		const auto texture = [this](int32_t _image)
+		{
+			return _image >= 0 ? m_modelTextures[_image] : m_whiteTexture;
+		};
+
+		bgfx::setTexture(0, m_baseColorSampler, texture(material.m_baseColorImage));
+		bgfx::setTexture(1, m_metallicRoughnessSampler, texture(material.m_metallicRoughnessImage));
+		const float materialInfo[] =
+		{
+			material.m_alphaCutoff,
+			material.m_metallicTextureMissing ? 0.0f : 1.0f,
+			material.m_twoSidedMask ? 1.0f : 0.0f,
+			0.0f,
+		};
+		bgfx::setUniform(m_materialInfoUniform, materialInfo);
+	}
+
+	// Makes a loaded mesh the current model: replaces the scene buffers and
+	// textures, places the camera and the light. Last frame's reservoirs and
+	// hash grid describe the old scene, so the history restarts.
+	void setModel(std::size_t _index, const SceneMesh& _mesh)
+	{
+		if (bgfx::isValid(m_vbh))
+		{
+			bgfx::destroy(m_vbh);
+		}
+		if (bgfx::isValid(m_ibh))
+		{
+			bgfx::destroy(m_ibh);
+		}
+		destroyModelTextures();
+
+		// Repeat wrapping and trilinear, anisotropic filtering (glTF samplers
+		// are not read; repeat is their default).
+		const uint64_t textureFlags = BGFX_SAMPLER_MIN_ANISOTROPIC | BGFX_SAMPLER_MAG_ANISOTROPIC;
+		for (const SceneImage& image : _mesh.m_images)
+		{
+			m_modelTextures.push_back(bgfx::createTexture2D(
+				  image.m_width, image.m_height, true, 1, bgfx::TextureFormat::RGBA8, textureFlags
+				, bgfx::copy(image.m_data.data(), uint32_t(image.m_data.size()))
+				));
+		}
+		m_materials = _mesh.m_materials;
+		m_draws = _mesh.m_draws;
+
+		m_vbh = bgfx::createVertexBuffer(
+			  bgfx::copy(_mesh.m_vertices.data(), uint32_t(_mesh.m_vertices.size() * sizeof(SceneVertex)))
+			, SceneVertex::ms_layout
+			);
+		m_ibh = bgfx::createIndexBuffer(
+			  bgfx::copy(_mesh.m_indices.data(), uint32_t(_mesh.m_indices.size() * sizeof(uint32_t)))
+			, BGFX_BUFFER_INDEX32
+			);
+
+		m_scene = describeScene(_mesh);
+		float cameraDistance = kInitialCameraDistance;
+		float cameraYaw = kInitialCameraYaw;
+		for (const BundledModel& bundled : kBundledModels)
+		{
+			if (m_modelPaths[_index] == bundled.m_path)
+			{
+				cameraDistance = bundled.m_cameraDistance;
+				cameraYaw = bundled.m_cameraYaw;
+			}
+		}
+		// Start where the old orbit camera did: at that distance and angle
+		// from the centre of the scene, looking at it.
+		m_cameraYaw = cameraYaw;
+		m_cameraPitch = kInitialCameraPitch;
+		m_eye = bx::sub(m_scene.m_center, bx::mul(cameraForward(), cameraDistance * m_scene.m_radius));
+		m_moveSpeedScale = 1.0f;
+		m_modelIndex = _index;
+		m_historyValid = false;
+	}
+
+	void switchModel(std::size_t _index)
+	{
+		try
+		{
+			setModel(_index, loadScene(m_modelPaths[_index]));
+			m_modelError.clear();
+		}
+		catch (const std::exception& _error)
+		{
+			std::fprintf(stderr, "%s\n", _error.what());
+			m_modelError = "Could not load " + m_modelPaths[_index] + " (see the log)";
+		}
+	}
+
 	void setFullscreenGeometry()
 	{
 		bgfx::setTransform(nullptr);
@@ -1348,21 +1907,39 @@ private:
 		bx::mtxIdentity(m_previousViewProj);
 	}
 
+	// Direction the camera looks in. Positive pitch looks down; yaw 0 looks
+	// along -z.
+	bx::Vec3 cameraForward() const
+	{
+		const float cosPitch = std::cos(m_cameraPitch);
+		return
+		{
+			-cosPitch * std::sin(m_cameraYaw),
+			-std::sin(m_cameraPitch),
+			-cosPitch * std::cos(m_cameraYaw),
+		};
+	}
+
+	// Fly camera: dragging with the left button turns it, W/S move along the
+	// view direction, A/D sideways, Shift/Ctrl straight up and down. The
+	// wheel scales the speed, which is otherwise relative to the scene size.
 	void updateCameraInput()
 	{
+		const int64_t now = bx::getHPCounter();
+		const float deltaTime = m_lastFrameTime == 0
+			? 0.0f
+			: std::min(float(double(now - m_lastFrameTime) / double(bx::getHPFrequency())), 0.1f);
+		m_lastFrameTime = now;
+
 		const bool isDragging = m_mouseState.m_buttons[entry::MouseButton::Left] != 0;
 		if (isDragging && m_isDragging)
 		{
 			const int32_t deltaX = m_mouseState.m_mx - m_lastMouseX;
 			const int32_t deltaY = m_mouseState.m_my - m_lastMouseY;
-			const float sensitivity = 0.005f;
+			const float sensitivity = 0.004f;
 
 			m_cameraYaw -= float(deltaX) * sensitivity;
-			m_cameraPitch = std::clamp(
-				  m_cameraPitch + float(deltaY) * sensitivity
-				, -0.15f
-				, 1.35f
-				);
+			m_cameraPitch = std::clamp(m_cameraPitch + float(deltaY) * sensitivity, -1.5f, 1.5f);
 		}
 
 		m_isDragging = isDragging;
@@ -1373,11 +1950,30 @@ private:
 		m_lastMouseWheel = m_mouseState.m_mz;
 		if (wheelDelta != 0)
 		{
-			m_cameraDistance = std::clamp(
-				  m_cameraDistance * std::exp(-float(wheelDelta) * 0.12f)
-				, kMinCameraDistance * m_scene.m_radius
-				, kMaxCameraDistance * m_scene.m_radius
-				);
+			m_moveSpeedScale = std::clamp(m_moveSpeedScale * std::pow(1.25f, float(wheelDelta)), 0.05f, 20.0f);
+		}
+
+		const bx::Vec3 forward = cameraForward();
+		const bx::Vec3 right = bx::normalize(bx::cross(forward, { 0.0f, 1.0f, 0.0f }));
+		const uint8_t modifiers = inputGetModifiersState();
+		const auto axis = [](bool _positive, bool _negative)
+		{
+			return (_positive ? 1.0f : 0.0f) - (_negative ? 1.0f : 0.0f);
+		};
+		const float forwardAmount = axis(inputGetKeyState(entry::Key::KeyW), inputGetKeyState(entry::Key::KeyS));
+		const float rightAmount = axis(inputGetKeyState(entry::Key::KeyD), inputGetKeyState(entry::Key::KeyA));
+		const float upAmount = axis(
+			  0 != (modifiers & (entry::Modifier::LeftShift | entry::Modifier::RightShift))
+			, 0 != (modifiers & (entry::Modifier::LeftCtrl | entry::Modifier::RightCtrl))
+			);
+
+		bx::Vec3 move = bx::add(bx::mul(forward, forwardAmount), bx::mul(right, rightAmount));
+		move = bx::add(move, { 0.0f, upAmount, 0.0f });
+		const float moveLength = bx::length(move);
+		if (moveLength > 0.0f)
+		{
+			const float speed = kCameraSpeed * m_scene.m_radius * m_moveSpeedScale;
+			m_eye = bx::add(m_eye, bx::mul(move, speed * deltaTime / moveLength));
 		}
 	}
 
@@ -1428,7 +2024,6 @@ private:
 	SceneInfo m_scene;
 	float m_cameraYaw;
 	float m_cameraPitch;
-	float m_cameraDistance;
 	float m_previousViewProj[16];
 	uint32_t m_frameNumber;
 	int32_t m_lastMouseX;
@@ -1477,6 +2072,26 @@ private:
 	bx::Vec3 m_previousEye = { 0.0f, 0.0f, 0.0f };
 	bool m_worldSpaceReuse = true;
 	bool m_gridKeyDown = false;
+
+	// Models M cycles through, and the one shown.
+	std::vector<std::string> m_modelPaths;
+	std::size_t m_modelIndex = 0;
+	std::string m_modelError;
+	bool m_modelKeyDown = false;
+
+	// The current model's textures, materials and per-material draws.
+	std::vector<bgfx::TextureHandle> m_modelTextures;
+	std::vector<SceneMaterial> m_materials;
+	std::vector<SceneDraw> m_draws;
+	bgfx::TextureHandle m_whiteTexture = BGFX_INVALID_HANDLE;
+	bgfx::UniformHandle m_baseColorSampler = BGFX_INVALID_HANDLE;
+	bgfx::UniformHandle m_metallicRoughnessSampler = BGFX_INVALID_HANDLE;
+	bgfx::UniformHandle m_materialInfoUniform = BGFX_INVALID_HANDLE;
+
+	// Fly camera.
+	bx::Vec3 m_eye = { 0.0f, 0.0f, 0.0f };
+	float m_moveSpeedScale = 1.0f;
+	int64_t m_lastFrameTime = 0;
 };
 
 } // namespace

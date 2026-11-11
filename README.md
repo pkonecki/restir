@@ -31,25 +31,58 @@ multi-configuration generators, the executable is placed in the `Debug`
 subdirectory. The build compiles the bgfx shaders for the platform's supported
 renderers and copies them and the model assets beside the executable.
 
-To load another model, pass its path:
+### Models
+
+The Cornell box is bundled. Crytek's Sponza can be added from the Khronos
+glTF sample assets:
+
+```sh
+cmake -P cmake/fetch_sponza.cmake
+```
+
+This downloads the model and its 69 textures (about 55 MB) from a pinned
+commit, checks their hashes, and places them in `assets/sponza`; files that
+are already there and intact are skipped. Pass `-DSPONZA_TEXTURES=OFF` before
+`-P` to fetch only the geometry (about 10 MB). Sponza is licensed under the
+[CRYENGINE Limited License Agreement](https://www.cryengine.com/ce-terms),
+so it is not part of this repository (`assets/sponza` is ignored by git) and
+is not in the published web build. Re-run the build afterwards to copy it
+beside the executable.
+
+Press M to switch between the models that are present. To load another
+model, pass its path; it comes first, ahead of the bundled ones:
 
 ```sh
 restir_gi --model path/to/scene.gltf
 ```
 
-The camera orbits the centre of the scene's bounds, and distances in the GI
-pass scale with the scene's size. A point light is placed in front of the
-scene's emissive surfaces, or near the top of the scene if it has none. Its
-intensity scales with the square of the scene's size. Materials use their
-base colour, metallic and roughness factors; textures and vertex colours are
-not loaded yet, and primitives that are not triangle lists are skipped.
+The camera starts looking at the centre of the scene's bounds, from outside
+the scene, except in Sponza, which is closed all around, where it starts
+inside the courtyard. Distances in the GI pass scale with the scene's size. A
+point light is placed in front of the scene's emissive surfaces, or near the
+top of the scene if it has none. Its intensity scales with the square of the
+scene's size. Primitives that are not triangle lists are skipped.
 
-Drag with the left mouse button to orbit, use the mouse wheel to zoom, and
-press B to switch between single-bounce and multi-bounce indirect light and S
-to turn shadows on or off, D to turn the denoiser on or off, and G to switch
-reservoir reuse between the world-space hash grid and screen-space
-neighbourhoods. Surfaces seen from behind are not drawn, so the walls nearest
-the camera disappear and the interior stays visible from any side.
+Materials use their base colour, metallic and roughness factors, multiplied
+by their base colour and metallic-roughness textures (read with `TEXCOORD_0`,
+external files or embedded, decoded with bimg, with mipmaps built at load
+time). Alpha-masked materials, such as Sponza's plants, are cut out in both
+the G-buffer and the shadow map, and double-sided ones are lit from both
+sides. Normal, occlusion and emissive textures, texture transforms, glTF
+samplers (textures always repeat) and vertex colours are not used. A texture
+that cannot be read is skipped with a warning; if it was a metallic-roughness
+texture, its material is treated as non-metallic, since models with one
+usually leave the metallic factor at its default of 1.
+
+The camera flies freely. Hold the left mouse button and drag to look around;
+use W, A, S and D to move forward, left, back and right, and Shift and Ctrl
+to move up and down. The speed follows the scene's size, and the mouse wheel
+scales it. Press B to switch between single-bounce and multi-bounce indirect
+light, H to turn shadows on or off, N to turn the denoiser on or off, G to
+switch reservoir reuse between the world-space hash grid and screen-space
+neighbourhoods, and M to switch models. Surfaces seen from behind are not
+drawn, so the walls nearest the camera disappear and the interior stays
+visible from any side.
 
 ## Web build (WebGPU)
 
@@ -82,8 +115,9 @@ directory rather than opening the file:
 python3 -m http.server -d build-web 8080
 ```
 
-and open <http://localhost:8080/restir_gi.html>. The web build always loads
-the bundled Cornell box, since `--model` has no command line to come from.
+and open <http://localhost:8080/restir_gi.html>. The web build starts with
+the bundled Cornell box, since `--model` has no command line to come from. A
+local web build also packs Sponza if it has been fetched, and M switches to it.
 
 `.github/workflows/pages.yml` runs these steps on every push and pull
 request, and deploys pushes to `main` to GitHub Pages. To enable the

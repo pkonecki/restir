@@ -3,8 +3,8 @@
  * License: https://github.com/bkaradzic/bgfx/blob/master/LICENSE
  */
 
-$input a_position, a_normal, a_color0, a_texcoord1
-$output v_worldPosition, v_worldNormal, v_albedo, v_material
+$input a_position, a_normal, a_color0, a_texcoord0, a_texcoord1
+$output v_worldPosition, v_worldNormal, v_albedo, v_material, v_texcoord0
 
 #include <common.sh>
 
@@ -18,4 +18,5 @@ void main()
 	v_worldNormal = normalize(worldNormal);
 	v_albedo = a_color0;
 	v_material = a_texcoord1;
+	v_texcoord0 = a_texcoord0;
 }

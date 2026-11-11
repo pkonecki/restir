@@ -1,4 +1,6 @@
 /build/
+# Fetched by cmake/fetch_sponza.cmake; kept out of the repository because of its license.
+/assets/sponza/
 /cmake-build-*/
 /build-web/
 /emsdk/
