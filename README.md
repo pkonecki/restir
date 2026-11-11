@@ -44,6 +44,52 @@ press B to switch between single-bounce and multi-bounce indirect light and S
 to turn shadows on or off, and D to turn the denoiser on or off. Surfaces seen from behind are not drawn, so the walls nearest
 the camera disappear and the interior stays visible from any side.
 
+## Web build (WebGPU)
+
+The example also builds to WebAssembly with Emscripten, rendering through
+bgfx's WebGPU renderer, so it needs a browser with WebGPU support.
+
+shaderc cannot run as WebAssembly, so build it natively first. The native
+build above already does; to build only shaderc:
+
+```sh
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build --target shaderc
+```
+
+Then configure the web build with the [Emscripten SDK](https://emscripten.org/docs/getting_started/downloads.html)
+active, pointing it at that shaderc:
+
+```sh
+emcmake cmake -S . -B build-web -DCMAKE_BUILD_TYPE=Release \
+    -DRESTIR_HOST_SHADERC=$PWD/build/_deps/bgfx.cmake-build/cmake/bgfx/shaderc
+cmake --build build-web
+```
+
+This writes `restir_gi.html`, `.js`, `.wasm` and `.data` to `build-web`; the
+`.data` file packs the WGSL shaders and the bundled model. Browsers expose
+WebGPU only to pages served over HTTPS or from localhost, so serve the
+directory rather than opening the file:
+
+```sh
+python3 -m http.server -d build-web 8080
+```
+
+and open <http://localhost:8080/restir_gi.html>. The web build always loads
+the bundled Cornell box, since `--model` has no command line to come from.
+
+Notes on the web build:
+
+- It enables only the WebGPU renderer; there is no WebGL fallback.
+- It links Asyncify so bgfx can wait for the browser's asynchronous
+  WebGPU adapter and device requests.
+- `web/webgpu_workarounds.js` works around Emscripten's emdawnwebgpu port
+  passing an unset timestamp-query index to the browser as `0xFFFFFFFF`,
+  which made every command encoder carrying bgfx's GPU timer invalid.
+- Use a Release build: in Debug, bgfx's HTML5 entry asserts that its
+  fullscreen request at start-up succeeds, which it cannot without a user
+  gesture, so the page stops before rendering.
+
 ## Denoiser
 
 The GI result is denoised in the style of SVGF (Schied et al. 2017), at GI

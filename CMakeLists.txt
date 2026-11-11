@@ -4,9 +4,24 @@ project(restir_gi LANGUAGES C CXX)
 
 include(FetchContent)
 
-set(BGFX_BUILD_TOOLS ON CACHE BOOL "" FORCE)
+if(EMSCRIPTEN)
+	# shaderc cannot run as WebAssembly, so the web build uses one built by a
+	# native build of this project (build/_deps/bgfx.cmake-build/cmake/bgfx/shaderc).
+	set(RESTIR_HOST_SHADERC "" CACHE FILEPATH "Native shaderc used to compile the shaders for the web build")
+	if(NOT EXISTS "${RESTIR_HOST_SHADERC}")
+		message(FATAL_ERROR "Set RESTIR_HOST_SHADERC to a native shaderc executable, e.g. one built by a native build of this project.")
+	endif()
+	add_executable(bgfx::shaderc IMPORTED)
+	set_target_properties(bgfx::shaderc PROPERTIES IMPORTED_LOCATION "${RESTIR_HOST_SHADERC}")
+
+	set(BGFX_BUILD_TOOLS OFF CACHE BOOL "" FORCE)
+	set(BGFX_CONFIG_RENDERER_WEBGPU ON CACHE BOOL "" FORCE)
+	set(BGFX_INSTALL OFF CACHE BOOL "" FORCE)
+else()
+	set(BGFX_BUILD_TOOLS ON CACHE BOOL "" FORCE)
+	set(BGFX_BUILD_TOOLS_SHADER ON CACHE BOOL "" FORCE)
+endif()
 set(BGFX_BUILD_TOOLS_BIN2C OFF CACHE BOOL "" FORCE)
-set(BGFX_BUILD_TOOLS_SHADER ON CACHE BOOL "" FORCE)
 set(BGFX_BUILD_TOOLS_GEOMETRY OFF CACHE BOOL "" FORCE)
 set(BGFX_BUILD_TOOLS_TEXTURE OFF CACHE BOOL "" FORCE)
 set(BGFX_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
@@ -20,6 +35,13 @@ FetchContent_Declare(
 	GIT_SUBMODULES_RECURSE TRUE
 )
 FetchContent_MakeAvailable(bgfx.cmake)
+
+if(EMSCRIPTEN)
+	# bgfx leaves its WebGPU renderer off on Emscripten unless asked; defining
+	# it also turns the other renderers off, so the web build is WebGPU only.
+	target_compile_definitions(bgfx PUBLIC BGFX_CONFIG_RENDERER_WEBGPU=1)
+	set(RESTIR_SHADER_PROFILES PROFILES wgsl)
+endif()
 
 set(FASTGLTF_ENABLE_TESTS OFF CACHE BOOL "" FORCE)
 set(FASTGLTF_ENABLE_EXAMPLES OFF CACHE BOOL "" FORCE)
@@ -47,6 +69,7 @@ bgfx_compile_shaders(
 	OUTPUT_DIR "${BGFX_SHADER_OUTPUT_DIR}"
 	OUT_FILES_VAR BGFX_VERTEX_SHADERS
 	INCLUDE_DIRS "${BGFX_SHADER_COMMON_INCLUDE_PATH}"
+	${RESTIR_SHADER_PROFILES}
 )
 
 bgfx_compile_shaders(
@@ -61,6 +84,7 @@ bgfx_compile_shaders(
 	OUTPUT_DIR "${BGFX_SHADER_OUTPUT_DIR}"
 	OUT_FILES_VAR BGFX_FRAGMENT_SHADERS
 	INCLUDE_DIRS "${BGFX_SHADER_COMMON_INCLUDE_PATH}"
+	${RESTIR_SHADER_PROFILES}
 )
 
 bgfx_compile_shaders(
@@ -70,6 +94,7 @@ bgfx_compile_shaders(
 	OUTPUT_DIR "${BGFX_SHADER_OUTPUT_DIR}"
 	OUT_FILES_VAR BGFX_FULLSCREEN_SHADERS
 	INCLUDE_DIRS "${BGFX_SHADER_COMMON_INCLUDE_PATH}"
+	${RESTIR_SHADER_PROFILES}
 )
 
 set(BGFX_RUNTIME_SHADERS)
@@ -109,16 +134,39 @@ target_compile_definitions(restir_gi PRIVATE
 )
 target_link_libraries(restir_gi PRIVATE example-common fastgltf::fastgltf)
 
-add_custom_command(
-	TARGET restir_gi POST_BUILD
-	COMMAND ${CMAKE_COMMAND} -E copy_directory
-		"${BGFX_SHADER_OUTPUT_DIR}"
-		"$<TARGET_FILE_DIR:restir_gi>/shaders"
-	COMMAND ${CMAKE_COMMAND} -E copy_directory
-		"${CMAKE_CURRENT_SOURCE_DIR}/assets"
-		"$<TARGET_FILE_DIR:restir_gi>/assets"
-	VERBATIM
-)
+if(EMSCRIPTEN)
+	# The shaders and assets are packaged into restir_gi.data, which the page
+	# downloads at start-up. Asyncify lets bgfx wait on the browser's
+	# asynchronous WebGPU adapter and device requests.
+	set_target_properties(restir_gi PROPERTIES SUFFIX ".html")
+	target_link_options(restir_gi PRIVATE
+		"-sASYNCIFY=1"
+		"-sASYNCIFY_STACK_SIZE=1048576"
+		"-sALLOW_MEMORY_GROWTH=1"
+		"-sENVIRONMENT=web"
+		"--shell-file=${CMAKE_CURRENT_SOURCE_DIR}/web/shell.html"
+		"--pre-js=${CMAKE_CURRENT_SOURCE_DIR}/web/webgpu_workarounds.js"
+		"--preload-file=${BGFX_SHADER_OUTPUT_DIR}@shaders"
+		"--exclude-file=*.sc.bin"
+		"--preload-file=${CMAKE_CURRENT_SOURCE_DIR}/assets@assets"
+	)
+	set_property(TARGET restir_gi APPEND PROPERTY LINK_DEPENDS
+		"${CMAKE_CURRENT_SOURCE_DIR}/web/shell.html"
+		"${CMAKE_CURRENT_SOURCE_DIR}/web/webgpu_workarounds.js"
+		${BGFX_RUNTIME_SHADERS}
+	)
+else()
+	add_custom_command(
+		TARGET restir_gi POST_BUILD
+		COMMAND ${CMAKE_COMMAND} -E copy_directory
+			"${BGFX_SHADER_OUTPUT_DIR}"
+			"$<TARGET_FILE_DIR:restir_gi>/shaders"
+		COMMAND ${CMAKE_COMMAND} -E copy_directory
+			"${CMAKE_CURRENT_SOURCE_DIR}/assets"
+			"$<TARGET_FILE_DIR:restir_gi>/assets"
+		VERBATIM
+	)
+endif()
 
 set_target_properties(restir_gi PROPERTIES
 	VS_DEBUGGER_WORKING_DIRECTORY "$<TARGET_FILE_DIR:restir_gi>"
