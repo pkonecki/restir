@@ -37,9 +37,12 @@ jobs:
           key: shaderc-${{ runner.os }}-${{ hashFiles('CMakeLists.txt') }}
           restore-keys: shaderc-${{ runner.os }}-
 
-      # The runner's Ubuntu mirrors sometimes fail to resolve, and apt then
-      # retries each package for minutes. Skip apt when the packages are
-      # already installed, otherwise retry with short timeouts.
+      # The runner lists its Ubuntu mirrors in /etc/apt/apt-mirrors.txt, with
+      # azure.archive.ubuntu.com first. That name sometimes stops resolving
+      # (while other hosts resolve fine), and apt then spends ~20 s per
+      # request on it. Skip apt when the packages are already installed;
+      # otherwise retry, and from the second attempt on use only the
+      # canonical Ubuntu mirror.
       - name: Install native build dependencies
         if: steps.shaderc-cache.outputs.cache-hit != 'true'
         timeout-minutes: 10
@@ -51,6 +54,10 @@ jobs:
           fi
           apt_options="-o Acquire::Retries=3 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20"
           for attempt in 1 2 3 4; do
+            if [ "$attempt" -gt 1 ] && [ -f /etc/apt/apt-mirrors.txt ]; then
+              echo "Switching apt to the canonical Ubuntu mirror."
+              echo "http://archive.ubuntu.com/ubuntu/" | sudo tee /etc/apt/apt-mirrors.txt
+            fi
             if sudo apt-get $apt_options update -q && \
                sudo apt-get $apt_options install -y -q --no-install-recommends $packages; then
               exit 0
