@@ -210,27 +210,34 @@ denoiser off, the world-space grid is visibly less noisy under camera motion.
 
 Differences from the paper: it resamples ray-traced path vertices over
 several spatial passes, while this example traces rays through the depth
-buffer and runs a single spatial pass. Cells keep the first 32 pixels to arrive rather
-than a uniform choice, which does not bias anything, since which reservoirs a
-cell lists does not depend on what they hold. The shared helpers and the
-pairwise MIS are in `shaders/restir.sh`.
+buffer and runs a single spatial pass. Cells keep the first 32 pixels to
+arrive rather than a uniform choice, which does not bias anything, since which
+reservoirs a cell lists does not depend on what they hold. The shared helpers
+and the pairwise MIS are in `shaders/restir.sh`.
 
 With multiple bounces enabled, a sample point is shaded with its direct light
 plus the indirect light that left it in the previous frame, read back from
 the denoised history. Each frame thus adds one bounce, and the lighting
-converges to all bounces within a few frames. The composite
-pass upsamples the result with a geometry-aware filter and adds direct PBR
-lighting.
+converges to all bounces within a few frames. The composite pass upsamples the
+result with a geometry-aware filter and adds direct PBR lighting.
 
 Known limits: rays only see the depth buffer, so off-screen, occluded and
-back-facing geometry cannot contribute, which also caps the extra bounces.
-For the same reason, a reservoir reused from the grid is dropped when its
-sample point is no longer visible on screen;
-bounced light lags a few frames behind camera motion; shadow edges have a
-fixed softness rather than one that matches the size of the light; and
-screen-space visibility and the clamped reconnection Jacobian leave a bias of
-a few percent. This is a real-time
+back-facing geometry cannot contribute, which also caps the extra bounces. For
+the same reason, a reservoir reused from the grid is dropped when its sample
+point is no longer visible on screen. Bounced light lags a few frames behind
+camera motion; shadow edges have a fixed softness rather than one that matches
+the size of the light; and screen-space visibility and the clamped
+reconnection Jacobian leave a bias of a few percent. This is a real-time
 demonstration, not an unbiased multi-bounce path tracer.
+
+## Visual Studio Code
+
+Install the Microsoft C/C++ extension. Use **Ctrl+Shift+B** to configure and
+build the Debug target, or select **Debug ReSTIR GI** in the Run and Debug
+view (F5) to build and launch it from the directory that holds its shaders
+and assets.
+
+## Credits
 
 The Cornell box model is "Cornell Box- Original" by t-ly, downloaded from
 [Sketchfab](https://sketchfab.com/3d-models/cornell-box-original-0d18de8d108c4c9cab1a4405698cc6b6)
@@ -241,10 +248,3 @@ This work is based on "Cornell Box- Original"
 (https://sketchfab.com/3d-models/cornell-box-original-0d18de8d108c4c9cab1a4405698cc6b6)
 by t-ly (https://sketchfab.com/t-ly) licensed under CC-BY-4.0
 (http://creativecommons.org/licenses/by/4.0/).
-
-## Visual Studio Code
-
-Install the Microsoft C/C++ extension. Use **Ctrl+Shift+B** to configure and
-build the Debug target, or select **Debug ReSTIR GI** in the Run and Debug
-view (F5) to build and launch it with the shader directory as its working
-directory.

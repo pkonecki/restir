@@ -40,12 +40,14 @@ if(EMSCRIPTEN)
 	# bgfx leaves its WebGPU renderer off on Emscripten unless asked; defining
 	# it also turns the other renderers off, so the web build is WebGPU only.
 	target_compile_definitions(bgfx PUBLIC BGFX_CONFIG_RENDERER_WEBGPU=1)
-	set(RESTIR_SHADER_PROFILES PROFILES wgsl)
-	set(RESTIR_COMPUTE_PROFILES PROFILES wgsl)
+	set(RESTIR_SHADER_PROFILES wgsl)
+	set(RESTIR_COMPUTE_PROFILES wgsl)
 else()
+	# Empty: bgfx's default profiles for the platform.
+	set(RESTIR_SHADER_PROFILES)
 	# The world-space ReSTIR shaders use compute and storage buffers, which
 	# GLSL ES 3.0 (the 300_es profile) does not have.
-	set(RESTIR_COMPUTE_PROFILES PROFILES spirv 430)
+	set(RESTIR_COMPUTE_PROFILES spirv 430)
 	if(WIN32)
 		list(APPEND RESTIR_COMPUTE_PROFILES s_5_0 s_6_0)
 	elseif(APPLE)
@@ -74,66 +76,44 @@ set(BGFX_SHADER_OUTPUT_DIR "${CMAKE_CURRENT_BINARY_DIR}/shaders")
 set(BGFX_SHADER_INCLUDE_PATH "${bgfx.cmake_SOURCE_DIR}/bgfx/src")
 set(BGFX_SHADER_COMMON_INCLUDE_PATH "${bgfx.cmake_SOURCE_DIR}/bgfx/examples/common")
 
-bgfx_compile_shaders(
-	TYPE VERTEX
-	SHADERS "${CMAKE_CURRENT_SOURCE_DIR}/shaders/vs_scene.sc"
-		"${CMAKE_CURRENT_SOURCE_DIR}/shaders/vs_shadow.sc"
-	VARYING_DEF "${CMAKE_CURRENT_SOURCE_DIR}/shaders/varying.def.sc"
-	OUTPUT_DIR "${BGFX_SHADER_OUTPUT_DIR}"
-	OUT_FILES_VAR BGFX_VERTEX_SHADERS
-	INCLUDE_DIRS "${BGFX_SHADER_COMMON_INCLUDE_PATH}"
-	${RESTIR_SHADER_PROFILES}
-)
+# Compiles shaders/<name>.sc for each name, for the given profiles (bgfx's
+# defaults if none), and appends the outputs to RESTIR_SHADER_BINARIES.
+function(restir_compile_shaders type)
+	cmake_parse_arguments(ARG "" "" "SHADERS;PROFILES" ${ARGN})
+	list(TRANSFORM ARG_SHADERS PREPEND "${CMAKE_CURRENT_SOURCE_DIR}/shaders/")
+	list(TRANSFORM ARG_SHADERS APPEND ".sc")
+	if(ARG_PROFILES)
+		set(profiles PROFILES ${ARG_PROFILES})
+	endif()
+	bgfx_compile_shaders(
+		TYPE ${type}
+		SHADERS ${ARG_SHADERS}
+		VARYING_DEF "${CMAKE_CURRENT_SOURCE_DIR}/shaders/varying.def.sc"
+		OUTPUT_DIR "${BGFX_SHADER_OUTPUT_DIR}"
+		OUT_FILES_VAR outputs
+		INCLUDE_DIRS "${BGFX_SHADER_COMMON_INCLUDE_PATH}"
+		${profiles}
+	)
+	set(RESTIR_SHADER_BINARIES ${RESTIR_SHADER_BINARIES} ${outputs} PARENT_SCOPE)
+endfunction()
 
-bgfx_compile_shaders(
-	TYPE FRAGMENT
-	SHADERS "${CMAKE_CURRENT_SOURCE_DIR}/shaders/fs_gbuffer.sc"
-		"${CMAKE_CURRENT_SOURCE_DIR}/shaders/fs_composite.sc"
-		"${CMAKE_CURRENT_SOURCE_DIR}/shaders/fs_shadow.sc"
-		"${CMAKE_CURRENT_SOURCE_DIR}/shaders/fs_svgf_variance.sc"
-		"${CMAKE_CURRENT_SOURCE_DIR}/shaders/fs_svgf_atrous.sc"
-	VARYING_DEF "${CMAKE_CURRENT_SOURCE_DIR}/shaders/varying.def.sc"
-	OUTPUT_DIR "${BGFX_SHADER_OUTPUT_DIR}"
-	OUT_FILES_VAR BGFX_FRAGMENT_SHADERS
-	INCLUDE_DIRS "${BGFX_SHADER_COMMON_INCLUDE_PATH}"
-	${RESTIR_SHADER_PROFILES}
-)
+set(RESTIR_SHADER_BINARIES)
+restir_compile_shaders(VERTEX
+	SHADERS vs_scene vs_shadow vs_fullscreen
+	PROFILES ${RESTIR_SHADER_PROFILES})
+restir_compile_shaders(FRAGMENT
+	SHADERS fs_gbuffer fs_composite fs_shadow fs_svgf_variance fs_svgf_atrous
+	PROFILES ${RESTIR_SHADER_PROFILES})
+restir_compile_shaders(FRAGMENT
+	SHADERS fs_restir_temporal fs_restir_spatial
+	PROFILES ${RESTIR_COMPUTE_PROFILES})
+restir_compile_shaders(COMPUTE
+	SHADERS cs_grid_clear cs_grid_insert
+	PROFILES ${RESTIR_COMPUTE_PROFILES})
 
-bgfx_compile_shaders(
-	TYPE FRAGMENT
-	SHADERS "${CMAKE_CURRENT_SOURCE_DIR}/shaders/fs_restir_temporal.sc"
-		"${CMAKE_CURRENT_SOURCE_DIR}/shaders/fs_restir_spatial.sc"
-	VARYING_DEF "${CMAKE_CURRENT_SOURCE_DIR}/shaders/varying.def.sc"
-	OUTPUT_DIR "${BGFX_SHADER_OUTPUT_DIR}"
-	OUT_FILES_VAR BGFX_RESTIR_SHADERS
-	INCLUDE_DIRS "${BGFX_SHADER_COMMON_INCLUDE_PATH}"
-	${RESTIR_COMPUTE_PROFILES}
-)
-
-bgfx_compile_shaders(
-	TYPE COMPUTE
-	SHADERS "${CMAKE_CURRENT_SOURCE_DIR}/shaders/cs_grid_clear.sc"
-		"${CMAKE_CURRENT_SOURCE_DIR}/shaders/cs_grid_insert.sc"
-	VARYING_DEF "${CMAKE_CURRENT_SOURCE_DIR}/shaders/varying.def.sc"
-	OUTPUT_DIR "${BGFX_SHADER_OUTPUT_DIR}"
-	OUT_FILES_VAR BGFX_COMPUTE_SHADERS
-	INCLUDE_DIRS "${BGFX_SHADER_COMMON_INCLUDE_PATH}"
-	${RESTIR_COMPUTE_PROFILES}
-)
-
-bgfx_compile_shaders(
-	TYPE VERTEX
-	SHADERS "${CMAKE_CURRENT_SOURCE_DIR}/shaders/vs_fullscreen.sc"
-	VARYING_DEF "${CMAKE_CURRENT_SOURCE_DIR}/shaders/varying.def.sc"
-	OUTPUT_DIR "${BGFX_SHADER_OUTPUT_DIR}"
-	OUT_FILES_VAR BGFX_FULLSCREEN_SHADERS
-	INCLUDE_DIRS "${BGFX_SHADER_COMMON_INCLUDE_PATH}"
-	${RESTIR_SHADER_PROFILES}
-)
-
+# The runtime looks for <name>.bin, not <name>.sc.bin.
 set(BGFX_RUNTIME_SHADERS)
-foreach(shader IN LISTS BGFX_VERTEX_SHADERS BGFX_FRAGMENT_SHADERS BGFX_FULLSCREEN_SHADERS
-		BGFX_RESTIR_SHADERS BGFX_COMPUTE_SHADERS)
+foreach(shader IN LISTS RESTIR_SHADER_BINARIES)
 	string(REGEX REPLACE "\\.sc\\.bin$" ".bin" runtime_shader "${shader}")
 	add_custom_command(
 		OUTPUT "${runtime_shader}"
@@ -144,25 +124,14 @@ foreach(shader IN LISTS BGFX_VERTEX_SHADERS BGFX_FRAGMENT_SHADERS BGFX_FULLSCREE
 	list(APPEND BGFX_RUNTIME_SHADERS "${runtime_shader}")
 endforeach()
 
+# Shader sources are listed so that IDEs show them.
+file(GLOB RESTIR_SHADER_SOURCES CONFIGURE_DEPENDS
+	"${CMAKE_CURRENT_SOURCE_DIR}/shaders/*.sc"
+	"${CMAKE_CURRENT_SOURCE_DIR}/shaders/*.sh")
+
 add_executable(restir_gi
 	src/main.cpp
-	shaders/vs_scene.sc
-	shaders/vs_shadow.sc
-	shaders/fs_shadow.sc
-	shaders/shadow.sh
-	shaders/fs_svgf_variance.sc
-	shaders/fs_svgf_atrous.sc
-	shaders/svgf.sh
-	shaders/fs_gbuffer.sc
-	shaders/fs_restir_temporal.sc
-	shaders/fs_restir_spatial.sc
-	shaders/restir.sh
-	shaders/hashgrid.sh
-	shaders/cs_grid_clear.sc
-	shaders/cs_grid_insert.sc
-	shaders/fs_composite.sc
-	shaders/vs_fullscreen.sc
-	shaders/varying.def.sc
+	${RESTIR_SHADER_SOURCES}
 	${BGFX_RUNTIME_SHADERS}
 )
 
