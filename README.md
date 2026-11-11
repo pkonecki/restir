@@ -77,12 +77,37 @@ usually leave the metallic factor at its default of 1.
 The camera flies freely. Hold the left mouse button and drag to look around;
 use W, A, S and D to move forward, left, back and right, and Shift and Ctrl
 to move up and down. The speed follows the scene's size, and the mouse wheel
-scales it. Press B to switch between single-bounce and multi-bounce indirect
-light, H to turn shadows on or off, N to turn the denoiser on or off, G to
-switch reservoir reuse between the world-space hash grid and screen-space
-neighbourhoods, and M to switch models. Surfaces seen from behind are not
-drawn, so the walls nearest the camera disappear and the interior stays
-visible from any side.
+scales it. Surfaces seen from behind are not drawn, so the walls nearest the
+camera disappear and the interior stays visible from any side.
+
+### Settings window
+
+Every toggle and setting is in the **ReSTIR GI** window (Dear ImGui, as
+bundled with bgfx's example code); new ones belong there too. It has three
+sections:
+
+- **Scene**: the model (M cycles through them) and the camera speed.
+- **Rendering**: multiple bounces (B), shadows (H), the denoiser (N), and
+  whether reservoirs are reused through the world-space hash grid or from
+  screen-space neighbourhoods (G).
+- **Performance**: frames per second with a frame time plot, and the GPU time
+  of each group of passes (shadow map, G-buffer, hash grid, ReSTIR temporal
+  and spatial, denoiser, composite), measured with bgfx's per-view profiler.
+  They need GPU timer queries; WebGPU offers them only in browsers that expose
+  `timestamp-query`. Below them are the levers that trade quality for speed:
+
+  | Setting | Default | Effect |
+  | --- | --- | --- |
+  | VSync | on | Off to measure how fast frames can go (also F7). |
+  | GI resolution | half | Size of every ReSTIR and denoiser target: full, half or quarter of the window. The GI cost follows the pixel count. |
+  | Shadow map face | 512 | Texels per side of each of the six cube faces, 256 to 2048. |
+  | Denoiser iterations | 5 | A-trous passes, 1 to 5; each doubles the filter radius. |
+  | Rays per pixel | 2 | Fresh candidates traced each frame in the temporal pass. |
+  | Temporal taps | 2 | Reservoirs reused from last frame. |
+  | Spatial taps | 4 | Reservoirs reused from this frame, each with a visibility ray. |
+  | Ray march steps | 32 | Depth buffer steps per ray. Rays reach as far with fewer, coarser steps, but miss thin geometry. |
+
+  **Reset to defaults** restores them.
 
 ## Web build (WebGPU)
 
@@ -169,10 +194,11 @@ The shared lookup is in `shaders/shadow.sh`.
 
 ## How the GI pass works
 
-GI runs at half resolution. Each pixel's receiver (the surface it sees) keeps
-one reservoir, and reservoirs are reused between receivers that are close in
-the scene, found through a world-space hash grid as in Boissé 2021, rather
-than between pixels that are close on screen. Each frame:
+GI runs at half resolution by default. Each pixel's receiver (the surface it
+sees) keeps one reservoir, and reservoirs are reused between receivers that
+are close in the scene, found through a world-space hash grid as in Boissé
+2021, rather than between pixels that are close on screen. Each frame (the counts below
+are the defaults; the settings window changes them):
 
 1. **Hash grid** (`shaders/cs_grid_clear.sc`, `shaders/cs_grid_insert.sc`,
    `shaders/hashgrid.sh`): two compute passes clear this frame's grid and

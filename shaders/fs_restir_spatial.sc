@@ -4,7 +4,7 @@ $input v_texcoord0
  * ReSTIR GI, step 2: spatial reuse and shading.
  *
  * This pixel's reservoir from the temporal pass is combined, with pairwise
- * MIS (restir.sh), with this frame's reservoirs of SPATIAL_TAPS other
+ * MIS (restir.sh), with this frame's reservoirs of kSpatialTaps other
  * receivers:
  *
  *   - World-space reuse (the default): picked at random from this frame's
@@ -38,7 +38,6 @@ SAMPLER2D(s_reservoirNormal, 10);  // this frame's receiver normal
 
 #include "restir.sh"
 
-#define SPATIAL_TAPS 4
 #define kMaxAccumulation 16.0 // frames blended into the displayed estimate
 
 // Last frame's accumulated GI and luminance moments at this receiver, from
@@ -130,8 +129,8 @@ void main()
 	}
 
 	float radius = reuseRadius(position);
-	PairwiseMis mis = beginPairwiseMis(position, normal, canonical, canonicalCount, SPATIAL_TAPS);
-	for (int tapIndex = 0; tapIndex < SPATIAL_TAPS; ++tapIndex)
+	PairwiseMis mis = beginPairwiseMis(position, normal, canonical, canonicalCount, kSpatialTaps);
+	for (int tapIndex = 0; tapIndex < kSpatialTaps; ++tapIndex)
 	{
 		float random0 = nextRandom(rng);
 		float random1 = nextRandom(rng);

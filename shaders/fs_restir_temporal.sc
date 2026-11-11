@@ -7,7 +7,7 @@ $input v_texcoord0
  * canonical reservoir. It is then combined, with pairwise MIS (restir.sh),
  * with reservoirs from the previous frame:
  *
- *   - World-space reuse (the default): TEMPORAL_TAPS reservoirs picked at
+ *   - World-space reuse (the default): kTemporalTaps reservoirs picked at
  *     random from last frame's hash grid cell around this receiver (see
  *     hashgrid.sh). The cell sizes of that grid were chosen from last frame's
  *     camera position, so the lookups use it too. No reprojection is
@@ -28,9 +28,6 @@ $input v_texcoord0
 SAMPLER2D(s_historySample, 3); // last frame's sample position + M
 
 #include "restir.sh"
-
-#define INITIAL_CANDIDATES 2
-#define TEMPORAL_TAPS      2
 
 void main()
 {
@@ -53,7 +50,7 @@ void main()
 
 	// Initial candidates: cosine-distributed rays, pdf = cos / pi.
 	Reservoir canonical = emptyReservoir();
-	for (int sampleIndex = 0; sampleIndex < INITIAL_CANDIDATES; ++sampleIndex)
+	for (int sampleIndex = 0; sampleIndex < kInitialCandidates; ++sampleIndex)
 	{
 		float random0 = nextRandom(rng);
 		float random1 = nextRandom(rng);
@@ -97,8 +94,8 @@ void main()
 	}
 
 	float radius = reuseRadius(position);
-	PairwiseMis mis = beginPairwiseMis(position, normal, canonical, canonical.count, TEMPORAL_TAPS);
-	for (int tapIndex = 0; tapIndex < TEMPORAL_TAPS; ++tapIndex)
+	PairwiseMis mis = beginPairwiseMis(position, normal, canonical, canonical.count, kTemporalTaps);
+	for (int tapIndex = 0; tapIndex < kTemporalTaps; ++tapIndex)
 	{
 		float random0 = nextRandom(rng);
 		float random1 = nextRandom(rng);
