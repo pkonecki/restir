@@ -39,27 +39,37 @@ jobs:
 
       # The runner lists its Ubuntu mirrors in /etc/apt/apt-mirrors.txt, with
       # azure.archive.ubuntu.com first. That name sometimes stops resolving
-      # (while other hosts resolve fine), and apt then spends ~20 s per
-      # request on it. Skip apt when the packages are already installed;
-      # otherwise retry, and from the second attempt on use only the
-      # canonical Ubuntu mirror.
+      # (while other hosts resolve fine); each lookup then takes ~20 s, which
+      # apt's own timeouts do not cover, and one apt run can take over ten
+      # minutes. So: skip apt when the packages are already installed, use
+      # the canonical mirror first (falling back to the runner's list), and
+      # cap each apt command with `timeout`.
       - name: Install native build dependencies
         if: steps.shaderc-cache.outputs.cache-hit != 'true'
-        timeout-minutes: 10
+        timeout-minutes: 15
         run: |
           packages="ninja-build libx11-dev libgl-dev libwayland-dev"
           if dpkg -s $packages >/dev/null 2>&1; then
             echo "All packages are already installed."
             exit 0
           fi
-          apt_options="-o Acquire::Retries=3 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20"
-          for attempt in 1 2 3 4; do
-            if [ "$attempt" -gt 1 ] && [ -f /etc/apt/apt-mirrors.txt ]; then
-              echo "Switching apt to the canonical Ubuntu mirror."
-              echo "http://archive.ubuntu.com/ubuntu/" | sudo tee /etc/apt/apt-mirrors.txt
+          mirrors=/etc/apt/apt-mirrors.txt
+          if [ -f "$mirrors" ]; then
+            sudo cp "$mirrors" "$mirrors.runner"
+          fi
+          apt_options="-o Acquire::Retries=2 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20"
+          for attempt in 1 2 3; do
+            if [ -f "$mirrors.runner" ]; then
+              if [ "$attempt" -eq 2 ]; then
+                echo "Using the runner's mirror list."
+                sudo cp "$mirrors.runner" "$mirrors"
+              else
+                echo "Using the canonical Ubuntu mirror."
+                echo "http://archive.ubuntu.com/ubuntu/" | sudo tee "$mirrors" >/dev/null
+              fi
             fi
-            if sudo apt-get $apt_options update -q && \
-               sudo apt-get $apt_options install -y -q --no-install-recommends $packages; then
+            if sudo timeout 90 apt-get $apt_options update -q && \
+               sudo timeout 150 apt-get $apt_options install -y -q --no-install-recommends $packages; then
               exit 0
             fi
             echo "apt attempt $attempt failed, retrying in $((attempt * 15)) s."
