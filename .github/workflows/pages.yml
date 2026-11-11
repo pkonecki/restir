@@ -27,61 +27,34 @@ jobs:
 
       # shaderc pulls in glslang, SPIRV-Tools and Tint and takes a while to
       # build, so keep the native build directory between runs. On an exact
-      # hit the cached shaderc is used as is, and the native packages and
-      # build below are skipped.
+      # hit the cached shaderc is used as is.
       - name: Cache native shaderc build
         id: shaderc-cache
         uses: actions/cache@v4
         with:
           path: build
-          key: shaderc-${{ runner.os }}-${{ hashFiles('CMakeLists.txt') }}
-          restore-keys: shaderc-${{ runner.os }}-
+          key: shaderc-make-${{ runner.os }}-${{ hashFiles('CMakeLists.txt') }}
+          restore-keys: shaderc-make-${{ runner.os }}-
 
-      # The runner lists its Ubuntu mirrors in /etc/apt/apt-mirrors.txt, with
-      # azure.archive.ubuntu.com first. That name sometimes stops resolving
-      # (while other hosts resolve fine); each lookup then takes ~20 s, which
-      # apt's own timeouts do not cover, and one apt run can take over ten
-      # minutes. So: skip apt when the packages are already installed, use
-      # the canonical mirror first (falling back to the runner's list), and
-      # cap each apt command with `timeout`.
-      - name: Install native build dependencies
-        if: steps.shaderc-cache.outputs.cache-hit != 'true'
-        timeout-minutes: 15
-        run: |
-          packages="ninja-build libx11-dev libgl-dev libwayland-dev"
-          if dpkg -s $packages >/dev/null 2>&1; then
-            echo "All packages are already installed."
-            exit 0
-          fi
-          mirrors=/etc/apt/apt-mirrors.txt
-          if [ -f "$mirrors" ]; then
-            sudo cp "$mirrors" "$mirrors.runner"
-          fi
-          apt_options="-o Acquire::Retries=2 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20"
-          for attempt in 1 2 3; do
-            if [ -f "$mirrors.runner" ]; then
-              if [ "$attempt" -eq 2 ]; then
-                echo "Using the runner's mirror list."
-                sudo cp "$mirrors.runner" "$mirrors"
-              else
-                echo "Using the canonical Ubuntu mirror."
-                echo "http://archive.ubuntu.com/ubuntu/" | sudo tee "$mirrors" >/dev/null
-              fi
-            fi
-            if sudo timeout 90 apt-get $apt_options update -q && \
-               sudo timeout 150 apt-get $apt_options install -y -q --no-install-recommends $packages; then
-              exit 0
-            fi
-            echo "apt attempt $attempt failed, retrying in $((attempt * 15)) s."
-            sleep $((attempt * 15))
-          done
-          exit 1
-
+      # No apt: the runners often cannot reach any Ubuntu mirror. bgfx's CMake
+      # requires X11 and OpenGL on Linux, but only the bgfx library and the
+      # desktop app use them; shaderc links neither. Placeholder paths satisfy
+      # those checks, and only shaderc is built. The default generator (make)
+      # avoids needing ninja.
       - name: Build native shaderc
         if: steps.shaderc-cache.outputs.cache-hit != 'true'
         run: |
-          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
-          cmake --build build --target shaderc
+          placeholders="$RUNNER_TEMP/x11-gl-placeholders"
+          mkdir -p "$placeholders/include"
+          touch "$placeholders/libplaceholder.so"
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
+            -DBGFX_WITH_WAYLAND=OFF \
+            -DX11_X11_INCLUDE_PATH="$placeholders/include" \
+            -DX11_X11_LIB="$placeholders/libplaceholder.so" \
+            -DOPENGL_INCLUDE_DIR="$placeholders/include" \
+            -DOPENGL_opengl_LIBRARY="$placeholders/libplaceholder.so" \
+            -DOPENGL_glx_LIBRARY="$placeholders/libplaceholder.so"
+          cmake --build build --target shaderc --parallel "$(nproc)"
 
       - name: Cache Emscripten SDK
         uses: actions/cache@v4
@@ -101,7 +74,6 @@ jobs:
       - name: Build web
         run: |
           source emsdk/emsdk_env.sh
-          # Default generator: on a shaderc cache hit, ninja is not installed.
           emcmake cmake -S . -B build-web -DCMAKE_BUILD_TYPE=Release \
             -DRESTIR_HOST_SHADERC="$PWD/build/_deps/bgfx.cmake-build/cmake/bgfx/shaderc"
           cmake --build build-web --parallel "$(nproc)"
