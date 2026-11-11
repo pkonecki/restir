@@ -1,0 +1,89 @@
+name: Deploy web build to GitHub Pages
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pages-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # The version the web build was verified with; its emdawnwebgpu port is what
+  # web/webgpu_workarounds.js works around, so update the two together.
+  EMSCRIPTEN_VERSION: 7.0.0
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install native build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build libx11-dev libgl-dev libwayland-dev
+
+      # shaderc pulls in glslang, SPIRV-Tools and Tint and takes a while to
+      # build, so keep the native build directory between runs.
+      - name: Cache native shaderc build
+        uses: actions/cache@v4
+        with:
+          path: build
+          key: shaderc-${{ runner.os }}-${{ hashFiles('CMakeLists.txt') }}
+          restore-keys: shaderc-${{ runner.os }}-
+
+      - name: Build native shaderc
+        run: |
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --target shaderc
+
+      - name: Cache Emscripten SDK
+        uses: actions/cache@v4
+        with:
+          path: emsdk
+          key: emsdk-${{ runner.os }}-${{ env.EMSCRIPTEN_VERSION }}
+
+      - name: Install Emscripten SDK
+        run: |
+          if [ ! -d emsdk ]; then
+            git clone --depth 1 https://github.com/emscripten-core/emsdk.git
+          fi
+          ./emsdk/emsdk install "$EMSCRIPTEN_VERSION"
+          ./emsdk/emsdk activate "$EMSCRIPTEN_VERSION"
+
+      - name: Build web
+        run: |
+          source emsdk/emsdk_env.sh
+          emcmake cmake -S . -B build-web -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DRESTIR_HOST_SHADERC="$PWD/build/_deps/bgfx.cmake-build/cmake/bgfx/shaderc"
+          cmake --build build-web
+
+      - name: Assemble site
+        run: |
+          mkdir -p site
+          cp build-web/restir_gi.js build-web/restir_gi.wasm build-web/restir_gi.data site/
+          cp build-web/restir_gi.html site/index.html
+
+      - uses: actions/upload-pages-artifact@v4
+        with:
+          path: site
+
+  deploy:
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

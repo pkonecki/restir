@@ -78,6 +78,11 @@ python3 -m http.server -d build-web 8080
 and open <http://localhost:8080/restir_gi.html>. The web build always loads
 the bundled Cornell box, since `--model` has no command line to come from.
 
+`.github/workflows/pages.yml` runs these steps on every push and pull
+request, and deploys pushes to `main` to GitHub Pages. To enable the
+deployment, set **Settings → Pages → Build and deployment → Source** to
+**GitHub Actions**.
+
 Notes on the web build:
 
 - It enables only the WebGPU renderer; there is no WebGL fallback.
