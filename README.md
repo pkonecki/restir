@@ -2,7 +2,12 @@
 
 A C++ ReSTIR global illumination example using bgfx. It loads a glTF scene
 using fastgltf (by default the bundled open-front Cornell box), then renders it
-with a deferred PBR pipeline and a screen-space ReSTIR GI pass.
+with a deferred PBR pipeline and ReSTIR GI whose reservoirs are reused
+through a world-space hash grid, after Boissé, "World-Space Spatiotemporal
+Reservoir Reuse for Ray-Traced Global Illumination" (SIGGRAPH Asia 2021).
+
+The renderer needs compute shaders (Direct3D 11/12, Vulkan, OpenGL 4.3,
+Metal or WebGPU); OpenGL ES is not supported.
 
 ## Requirements
 
@@ -41,7 +46,9 @@ not loaded yet, and primitives that are not triangle lists are skipped.
 
 Drag with the left mouse button to orbit, use the mouse wheel to zoom, and
 press B to switch between single-bounce and multi-bounce indirect light and S
-to turn shadows on or off, and D to turn the denoiser on or off. Surfaces seen from behind are not drawn, so the walls nearest
+to turn shadows on or off, D to turn the denoiser on or off, and G to switch
+reservoir reuse between the world-space hash grid and screen-space
+neighbourhoods. Surfaces seen from behind are not drawn, so the walls nearest
 the camera disappear and the interior stays visible from any side.
 
 ## Web build (WebGPU)
@@ -128,21 +135,51 @@ The shared lookup is in `shaders/shadow.sh`.
 
 ## How the GI pass works
 
-The GI pass (`shaders/fs_restir_gi.sc`) runs at half resolution. Per pixel it:
+GI runs at half resolution. Each pixel's receiver (the surface it sees) keeps
+one reservoir, and reservoirs are reused between receivers that are close in
+the scene, found through a world-space hash grid as in Boissé 2021, rather
+than between pixels that are close on screen. Each frame:
 
-1. traces two cosine-distributed rays through the depth buffer and resamples
-   the hits into a reservoir, together with the pixel's own reprojected
-   reservoir from the previous frame (capped at M = 20);
-2. combines that reservoir with the previous-frame reservoirs of four random
-   neighbours on the same surface using pairwise MIS, applying the
-   reconnection Jacobian. The MIS weights check whether each neighbour could
-   have found this pixel's sample, with one screen-space visibility ray per
-   neighbour, so occluders next to a pixel do not darken it;
-3. tests the chosen sample for visibility from this pixel, shades it, and
-   hands the result to the denoiser (below).
+1. **Hash grid** (`shaders/cs_grid_clear.sc`, `shaders/cs_grid_insert.sc`,
+   `shaders/hashgrid.sh`): two compute passes clear this frame's grid and
+   list every GI pixel in the cell of its receiver. The cell size grows with
+   the distance to the camera, so a cell covers about six GI pixels anywhere
+   on screen. It is the smallest size times a power of two, and the size and
+   the receiver's dominant normal axis are part of the cell key. Cells live
+   in an open-addressing table of 65,536 slots, found with one hash and told
+   apart with a second, 32-bit checksum hash, and each lists up to 32 pixels.
+   Positions are jittered within the tangent plane by up to half a cell, both
+   on insertion and on every lookup, so cell boundaries do not show up as
+   blocks.
+2. **Temporal pass** (`shaders/fs_restir_temporal.sc`): traces two
+   cosine-distributed rays through the depth buffer and resamples the hits
+   into a reservoir. It then combines that reservoir, using pairwise MIS and
+   the reconnection Jacobian, with two reservoirs picked at random from last
+   frame's grid cell around the receiver (M capped at 20). This needs no
+   reprojection: a surface seen anywhere on screen last frame contributes if
+   it lies in this receiver's cell. A sample taken over from another receiver
+   is tested for visibility before the result is stored as this frame's
+   reservoir.
+3. **Spatial pass** (`shaders/fs_restir_spatial.sc`): combines the pixel's
+   reservoir with four others picked from this frame's grid cell, again with
+   pairwise MIS. The MIS weights check whether each neighbour could have
+   found this pixel's sample, with one screen-space visibility ray per
+   neighbour, so occluders next to a pixel do not darken it. The pass then
+   tests the chosen sample for visibility, shades it, and hands the result to
+   the denoiser (below). The spatially combined reservoir is not stored.
 
-Only the reservoir from step 1 is stored as history, along with the
-receiver's position and normal, which the MIS weights need.
+The reservoirs from step 2, with each receiver's position and normal (which
+the MIS weights need), are the history that next frame's grid lookups read.
+Press G to reuse screen-space neighbours instead: the pixel's reprojected
+reservoir in step 2, and pixels within 12 texels in step 3. With the
+denoiser off, the world-space grid is visibly less noisy under camera motion.
+
+Differences from the paper: it resamples ray-traced path vertices over
+several spatial passes, while this example traces rays through the depth
+buffer and runs a single spatial pass. Cells keep the first 32 pixels to arrive rather
+than a uniform choice, which does not bias anything, since which reservoirs a
+cell lists does not depend on what they hold. The shared helpers and the
+pairwise MIS are in `shaders/restir.sh`.
 
 With multiple bounces enabled, a sample point is shaded with its direct light
 plus the indirect light that left it in the previous frame, read back from
@@ -152,7 +189,9 @@ pass upsamples the result with a geometry-aware filter and adds direct PBR
 lighting.
 
 Known limits: rays only see the depth buffer, so off-screen, occluded and
-back-facing geometry cannot contribute, which also caps the extra bounces;
+back-facing geometry cannot contribute, which also caps the extra bounces.
+For the same reason, a reservoir reused from the grid is dropped when its
+sample point is no longer visible on screen;
 bounced light lags a few frames behind camera motion; shadow edges have a
 fixed softness rather than one that matches the size of the light; and
 screen-space visibility and the clamped reconnection Jacobian leave a bias of

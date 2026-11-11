@@ -41,6 +41,19 @@ if(EMSCRIPTEN)
 	# it also turns the other renderers off, so the web build is WebGPU only.
 	target_compile_definitions(bgfx PUBLIC BGFX_CONFIG_RENDERER_WEBGPU=1)
 	set(RESTIR_SHADER_PROFILES PROFILES wgsl)
+	set(RESTIR_COMPUTE_PROFILES PROFILES wgsl)
+else()
+	# The world-space ReSTIR shaders use compute and storage buffers, which
+	# GLSL ES 3.0 (the 300_es profile) does not have.
+	set(RESTIR_COMPUTE_PROFILES PROFILES spirv 430)
+	if(WIN32)
+		list(APPEND RESTIR_COMPUTE_PROFILES s_5_0 s_6_0)
+	elseif(APPLE)
+		list(APPEND RESTIR_COMPUTE_PROFILES metal)
+	endif()
+	if(BGFX_CONFIG_RENDERER_WEBGPU)
+		list(APPEND RESTIR_COMPUTE_PROFILES wgsl)
+	endif()
 endif()
 
 set(FASTGLTF_ENABLE_TESTS OFF CACHE BOOL "" FORCE)
@@ -75,7 +88,6 @@ bgfx_compile_shaders(
 bgfx_compile_shaders(
 	TYPE FRAGMENT
 	SHADERS "${CMAKE_CURRENT_SOURCE_DIR}/shaders/fs_gbuffer.sc"
-		"${CMAKE_CURRENT_SOURCE_DIR}/shaders/fs_restir_gi.sc"
 		"${CMAKE_CURRENT_SOURCE_DIR}/shaders/fs_composite.sc"
 		"${CMAKE_CURRENT_SOURCE_DIR}/shaders/fs_shadow.sc"
 		"${CMAKE_CURRENT_SOURCE_DIR}/shaders/fs_svgf_variance.sc"
@@ -85,6 +97,28 @@ bgfx_compile_shaders(
 	OUT_FILES_VAR BGFX_FRAGMENT_SHADERS
 	INCLUDE_DIRS "${BGFX_SHADER_COMMON_INCLUDE_PATH}"
 	${RESTIR_SHADER_PROFILES}
+)
+
+bgfx_compile_shaders(
+	TYPE FRAGMENT
+	SHADERS "${CMAKE_CURRENT_SOURCE_DIR}/shaders/fs_restir_temporal.sc"
+		"${CMAKE_CURRENT_SOURCE_DIR}/shaders/fs_restir_spatial.sc"
+	VARYING_DEF "${CMAKE_CURRENT_SOURCE_DIR}/shaders/varying.def.sc"
+	OUTPUT_DIR "${BGFX_SHADER_OUTPUT_DIR}"
+	OUT_FILES_VAR BGFX_RESTIR_SHADERS
+	INCLUDE_DIRS "${BGFX_SHADER_COMMON_INCLUDE_PATH}"
+	${RESTIR_COMPUTE_PROFILES}
+)
+
+bgfx_compile_shaders(
+	TYPE COMPUTE
+	SHADERS "${CMAKE_CURRENT_SOURCE_DIR}/shaders/cs_grid_clear.sc"
+		"${CMAKE_CURRENT_SOURCE_DIR}/shaders/cs_grid_insert.sc"
+	VARYING_DEF "${CMAKE_CURRENT_SOURCE_DIR}/shaders/varying.def.sc"
+	OUTPUT_DIR "${BGFX_SHADER_OUTPUT_DIR}"
+	OUT_FILES_VAR BGFX_COMPUTE_SHADERS
+	INCLUDE_DIRS "${BGFX_SHADER_COMMON_INCLUDE_PATH}"
+	${RESTIR_COMPUTE_PROFILES}
 )
 
 bgfx_compile_shaders(
@@ -98,7 +132,8 @@ bgfx_compile_shaders(
 )
 
 set(BGFX_RUNTIME_SHADERS)
-foreach(shader IN LISTS BGFX_VERTEX_SHADERS BGFX_FRAGMENT_SHADERS BGFX_FULLSCREEN_SHADERS)
+foreach(shader IN LISTS BGFX_VERTEX_SHADERS BGFX_FRAGMENT_SHADERS BGFX_FULLSCREEN_SHADERS
+		BGFX_RESTIR_SHADERS BGFX_COMPUTE_SHADERS)
 	string(REGEX REPLACE "\\.sc\\.bin$" ".bin" runtime_shader "${shader}")
 	add_custom_command(
 		OUTPUT "${runtime_shader}"
@@ -119,7 +154,12 @@ add_executable(restir_gi
 	shaders/fs_svgf_atrous.sc
 	shaders/svgf.sh
 	shaders/fs_gbuffer.sc
-	shaders/fs_restir_gi.sc
+	shaders/fs_restir_temporal.sc
+	shaders/fs_restir_spatial.sc
+	shaders/restir.sh
+	shaders/hashgrid.sh
+	shaders/cs_grid_clear.sc
+	shaders/cs_grid_insert.sc
 	shaders/fs_composite.sc
 	shaders/vs_fullscreen.sc
 	shaders/varying.def.sc

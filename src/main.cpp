@@ -397,6 +397,26 @@ constexpr bgfx::ViewId kShadowViewBase = 3; // views 3-8, ordered before the oth
 constexpr bgfx::ViewId kDenoiseViewBase = 9; // views 9-14
 constexpr uint8_t kAtrousIterations = 5;
 
+// ReSTIR GI passes: the G-buffer (view 0), then the world-space hash grid is
+// cleared and filled (compute), then the temporal pass (view 1) and the
+// spatial pass.
+constexpr bgfx::ViewId kGridClearView = 15;
+constexpr bgfx::ViewId kGridInsertView = 16;
+constexpr bgfx::ViewId kSpatialView = 17;
+
+// World-space hash grid (see shaders/hashgrid.sh, which must agree on the
+// table size and cell capacity).
+constexpr uint32_t kGridTableSize = 65536;
+constexpr uint32_t kGridCellCapacity = 32;
+constexpr float kGridMinCellSize = 0.02f; // for the reference scene, scaled with the scene
+constexpr float kGridCellPixels = 6.0f;   // cell size, in GI pixels, that the grid aims for
+
+// Buffer stages of the grid, in the compute passes and in the GI passes.
+constexpr uint8_t kGridComputeStage = 0;  // 0-2
+constexpr uint8_t kGridFragmentStage = 11; // 11-13
+
+constexpr float kCameraFovY = 48.0f;
+
 // Orbit camera distances, in scene radii.
 constexpr float kInitialCameraDistance = 3.17f;
 constexpr float kMinCameraDistance = 1.8f;
@@ -420,7 +440,8 @@ public:
 		, m_targetWidth(0)
 		, m_targetHeight(0)
 		, m_geometryProgram(BGFX_INVALID_HANDLE)
-		, m_restirProgram(BGFX_INVALID_HANDLE)
+		, m_temporalProgram(BGFX_INVALID_HANDLE)
+		, m_spatialProgram(BGFX_INVALID_HANDLE)
 		, m_compositeProgram(BGFX_INVALID_HANDLE)
 		, m_lightPosition(BGFX_INVALID_HANDLE)
 		, m_lightColor(BGFX_INVALID_HANDLE)
@@ -472,7 +493,11 @@ public:
 	{
 		for (uint8_t idx = 0; idx < 2; ++idx)
 		{
-			m_historyFrameBuffers[idx] = BGFX_INVALID_HANDLE;
+			m_reservoirFrameBuffers[idx] = BGFX_INVALID_HANDLE;
+			m_shadeFrameBuffers[idx] = BGFX_INVALID_HANDLE;
+			m_gridChecksums[idx] = BGFX_INVALID_HANDLE;
+			m_gridCounts[idx] = BGFX_INVALID_HANDLE;
+			m_gridEntries[idx] = BGFX_INVALID_HANDLE;
 			m_historyColor[idx] = BGFX_INVALID_HANDLE;
 			m_historySample[idx] = BGFX_INVALID_HANDLE;
 			m_historyReceiver[idx] = BGFX_INVALID_HANDLE;
@@ -517,7 +542,7 @@ public:
 		{
 			kShadowViewBase + 0, kShadowViewBase + 1, kShadowViewBase + 2,
 			kShadowViewBase + 3, kShadowViewBase + 4, kShadowViewBase + 5,
-			0, 1,
+			0, kGridClearView, kGridInsertView, 1, kSpatialView,
 			kDenoiseViewBase + 0, kDenoiseViewBase + 1, kDenoiseViewBase + 2,
 			kDenoiseViewBase + 3, kDenoiseViewBase + 4, kDenoiseViewBase + 5,
 			2,
@@ -530,6 +555,10 @@ public:
 		if (0 == (bgfx::getCaps()->supported & BGFX_CAPS_INDEX32))
 		{
 			throw std::runtime_error("The renderer does not support 32-bit index buffers.");
+		}
+		if (0 == (bgfx::getCaps()->supported & BGFX_CAPS_COMPUTE))
+		{
+			throw std::runtime_error("World-space ReSTIR GI requires compute shaders.");
 		}
 
 		const SceneMesh mesh = loadScene(modelPath);
@@ -561,7 +590,10 @@ public:
 			);
 
 		m_geometryProgram = loadProgram("vs_scene", "fs_gbuffer");
-		m_restirProgram = loadProgram("vs_fullscreen", "fs_restir_gi");
+		m_temporalProgram = loadProgram("vs_fullscreen", "fs_restir_temporal");
+		m_spatialProgram = loadProgram("vs_fullscreen", "fs_restir_spatial");
+		m_gridClearProgram = bgfx::createProgram(loadShader("cs_grid_clear"), true);
+		m_gridInsertProgram = bgfx::createProgram(loadShader("cs_grid_insert"), true);
 		m_compositeProgram = loadProgram("vs_fullscreen", "fs_composite");
 		m_shadowProgram = loadProgram("vs_shadow", "fs_shadow");
 		m_varianceProgram = loadProgram("vs_fullscreen", "fs_svgf_variance");
@@ -594,11 +626,36 @@ public:
 		m_giNormalSampler = bgfx::createUniform("s_giNormal", bgfx::UniformType::Sampler);
 		m_filterInputSampler = bgfx::createUniform("s_filterInput", bgfx::UniformType::Sampler);
 		m_atrousInfoUniform = bgfx::createUniform("u_atrousInfo", bgfx::UniformType::Vec4);
+		m_reservoirSampleSampler = bgfx::createUniform("s_reservoirSample", bgfx::UniformType::Sampler);
+		m_reservoirReceiverSampler = bgfx::createUniform("s_reservoirReceiver", bgfx::UniformType::Sampler);
+		m_reservoirNormalSampler = bgfx::createUniform("s_reservoirNormal", bgfx::UniformType::Sampler);
+		m_gridInfoUniform = bgfx::createUniform("u_gridInfo", bgfx::UniformType::Vec4);
+		m_gridCameraUniform = bgfx::createUniform("u_gridCamera", bgfx::UniformType::Vec4);
+
+		// Two hash grids, this frame's and last frame's, like the reservoirs
+		// they index. Their size does not depend on the resolution.
+		for (uint8_t idx = 0; idx < 2; ++idx)
+		{
+			m_gridChecksums[idx] = bgfx::createDynamicIndexBuffer(
+				kGridTableSize, BGFX_BUFFER_COMPUTE_READ_WRITE | BGFX_BUFFER_INDEX32);
+			m_gridCounts[idx] = bgfx::createDynamicIndexBuffer(
+				kGridTableSize, BGFX_BUFFER_COMPUTE_READ_WRITE | BGFX_BUFFER_INDEX32);
+			m_gridEntries[idx] = bgfx::createDynamicIndexBuffer(
+				kGridTableSize * kGridCellCapacity, BGFX_BUFFER_COMPUTE_READ_WRITE | BGFX_BUFFER_INDEX32);
+			if (!bgfx::isValid(m_gridChecksums[idx]) || !bgfx::isValid(m_gridCounts[idx])
+			||  !bgfx::isValid(m_gridEntries[idx]))
+			{
+				throw std::runtime_error("Failed to create the hash grid buffers.");
+			}
+		}
 
 		BX_ASSERT(bgfx::isValid(m_vbh), "Failed to create the scene vertex buffer.");
 		BX_ASSERT(bgfx::isValid(m_ibh), "Failed to create the scene index buffer.");
 		BX_ASSERT(bgfx::isValid(m_geometryProgram), "Failed to load G-buffer shaders.");
-		BX_ASSERT(bgfx::isValid(m_restirProgram), "Failed to load ReSTIR GI shaders.");
+		BX_ASSERT(bgfx::isValid(m_temporalProgram), "Failed to load ReSTIR GI temporal shaders.");
+		BX_ASSERT(bgfx::isValid(m_spatialProgram), "Failed to load ReSTIR GI spatial shaders.");
+		BX_ASSERT(bgfx::isValid(m_gridClearProgram), "Failed to load the hash grid clear shader.");
+		BX_ASSERT(bgfx::isValid(m_gridInsertProgram), "Failed to load the hash grid insert shader.");
 		BX_ASSERT(bgfx::isValid(m_compositeProgram), "Failed to load composite shaders.");
 		BX_ASSERT(bgfx::isValid(m_shadowProgram), "Failed to load shadow shaders.");
 		BX_ASSERT(bgfx::isValid(m_varianceProgram), "Failed to load denoiser variance shaders.");
@@ -625,12 +682,28 @@ public:
 			m_shadowSampler, m_shadowViewProjUniform, m_shadowInfoUniform, m_shadowOptionsUniform,
 			m_historyMomentsSampler, m_giColorSampler, m_giMomentsSampler, m_giReceiverSampler,
 			m_giNormalSampler, m_filterInputSampler, m_atrousInfoUniform,
+			m_reservoirSampleSampler, m_reservoirReceiverSampler, m_reservoirNormalSampler,
+			m_gridInfoUniform, m_gridCameraUniform,
 		};
 		for (const bgfx::UniformHandle uniform : uniforms)
 		{
 			if (bgfx::isValid(uniform))
 			{
 				bgfx::destroy(uniform);
+			}
+		}
+		for (uint8_t idx = 0; idx < 2; ++idx)
+		{
+			const bgfx::DynamicIndexBufferHandle buffers[] =
+			{
+				m_gridChecksums[idx], m_gridCounts[idx], m_gridEntries[idx],
+			};
+			for (const bgfx::DynamicIndexBufferHandle buffer : buffers)
+			{
+				if (bgfx::isValid(buffer))
+				{
+					bgfx::destroy(buffer);
+				}
 			}
 		}
 		if (bgfx::isValid(m_ibh))
@@ -651,8 +724,8 @@ public:
 		}
 		const bgfx::ProgramHandle programs[] =
 		{
-			m_geometryProgram, m_restirProgram, m_compositeProgram, m_shadowProgram,
-			m_varianceProgram, m_atrousProgram,
+			m_geometryProgram, m_temporalProgram, m_spatialProgram, m_compositeProgram, m_shadowProgram,
+			m_varianceProgram, m_atrousProgram, m_gridClearProgram, m_gridInsertProgram,
 		};
 		for (const bgfx::ProgramHandle program : programs)
 		{
@@ -700,6 +773,16 @@ public:
 		}
 		m_denoiseKeyDown = denoiseKeyDown;
 
+		// G switches where reservoirs are reused from: world-space hash grid
+		// cells, or screen-space neighbourhoods. The reservoirs mean the same
+		// in both, so accumulation carries on.
+		const bool gridKeyDown = inputGetKeyState(entry::Key::KeyG);
+		if (gridKeyDown && !m_gridKeyDown)
+		{
+			m_worldSpaceReuse = !m_worldSpaceReuse;
+		}
+		m_gridKeyDown = gridKeyDown;
+
 		bgfx::dbgTextClear();
 		bgfx::dbgTextPrintf(0, 1, 0x0f, "Indirect light: %s (B to toggle)"
 			, m_multipleBounces ? "multiple bounces" : "single bounce");
@@ -707,6 +790,8 @@ public:
 			, m_shadowsEnabled ? "on" : "off");
 		bgfx::dbgTextPrintf(0, 3, 0x0f, "Denoiser: %s (D to toggle)"
 			, m_denoiseEnabled ? "on" : "off");
+		bgfx::dbgTextPrintf(0, 4, 0x0f, "Reservoir reuse: %s (G to toggle)"
+			, m_worldSpaceReuse ? "world-space hash grid" : "screen-space");
 
 		if (m_width == 0 || m_height == 0)
 		{
@@ -733,7 +818,7 @@ public:
 		bx::mtxLookAt(view, eye, at, { 0.0f, 1.0f, 0.0f }, bx::Handedness::Right);
 		bx::mtxProj(
 			  projection
-			, 48.0f
+			, kCameraFovY
 			, float(m_width) / float(m_height)
 			, 0.05f * radius
 			, (kMaxCameraDistance + 2.0f) * radius
@@ -849,31 +934,10 @@ public:
 			);
 		bgfx::submit(0, m_geometryProgram);
 
+		// This frame's reservoirs, shaded GI and hash grid are written at
+		// historyWrite; last frame's are read from m_historyRead.
 		const uint8_t historyWrite = uint8_t(1 - m_historyRead);
 
-		bgfx::setMarker("ReSTIR GI Pass");
-		bgfx::setViewRect(1, 0, 0, giWidth, giHeight);
-		bgfx::setViewFrameBuffer(1, m_historyFrameBuffers[historyWrite]);
-		bgfx::setViewTransform(1, nullptr, nullptr);
-		bgfx::setTexture(0, m_albedoSampler, m_gbufferAlbedo);
-		bgfx::setTexture(1, m_normalSampler, m_gbufferNormal);
-		bgfx::setTexture(2, m_depthSampler, m_gbufferDepth);
-		bgfx::setTexture(3, m_historySampleSampler, m_historySample[m_historyRead]);
-		bgfx::setTexture(4, m_historyReceiverSampler, m_historyReceiver[m_historyRead]);
-		// With the denoiser, the history is its first filtered iteration.
-		bgfx::setTexture(5, m_historyColorSampler
-			, m_denoiseEnabled ? m_filteredHistory[m_historyRead] : m_historyColor[m_historyRead]);
-		bgfx::setTexture(8, m_historyMomentsSampler, m_historyMoments[m_historyRead]);
-		bgfx::setTexture(6, m_historyNormalSampler, m_historyNormal[m_historyRead]);
-		bgfx::setTexture(7, m_shadowSampler, m_shadowMap);
-		bgfx::setUniform(m_shadowViewProjUniform, shadowViewProj, 6);
-		bgfx::setUniform(m_shadowInfoUniform, shadowInfo);
-		bgfx::setUniform(m_shadowOptionsUniform, shadowOptions);
-		bgfx::setUniform(m_inverseViewProjection, inverseViewProjection);
-		bgfx::setUniform(m_viewProjection, viewProjection);
-		bgfx::setUniform(m_previousViewProjection, m_previousViewProj);
-		bgfx::setUniform(m_lightPosition, lightPosition);
-		bgfx::setUniform(m_lightColor, lightColor);
 		const float frameInfo[] =
 		{
 			float(m_frameNumber & 0xffffff)
@@ -885,12 +949,116 @@ public:
 		{
 			float(giWidth), float(giHeight), 1.0f / float(giWidth), 1.0f / float(giHeight),
 		};
+		// The world size of a GI pixel grows linearly with the distance from
+		// the camera; the grid sizes its cells from it.
+		const float gridInfo[] =
+		{
+			kGridMinCellSize * sceneScale
+			, 2.0f * std::tan(0.5f * bx::toRad(kCameraFovY)) / float(giHeight)
+			, kGridCellPixels
+			, m_worldSpaceReuse ? 1.0f : 0.0f
+		};
+		const float previousCameraPosition[] =
+		{
+			m_previousEye.x, m_previousEye.y, m_previousEye.z, 1.0f,
+		};
+
+		// World-space hash grid: clear this frame's grid, then list every GI
+		// pixel in the cell of its receiver.
+		bgfx::setMarker("Hash Grid");
+		bgfx::setViewName(kGridClearView, "Hash Grid Clear");
+		bgfx::setBuffer(kGridComputeStage + 0, m_gridChecksums[historyWrite], bgfx::Access::Write);
+		bgfx::setBuffer(kGridComputeStage + 1, m_gridCounts[historyWrite], bgfx::Access::Write);
+		bgfx::setBuffer(kGridComputeStage + 2, m_gridEntries[historyWrite], bgfx::Access::Write);
+		bgfx::dispatch(kGridClearView, m_gridClearProgram, kGridTableSize / 64, 1, 1);
+
+		bgfx::setViewName(kGridInsertView, "Hash Grid Insert");
+		bgfx::setBuffer(kGridComputeStage + 0, m_gridChecksums[historyWrite], bgfx::Access::ReadWrite);
+		bgfx::setBuffer(kGridComputeStage + 1, m_gridCounts[historyWrite], bgfx::Access::ReadWrite);
+		bgfx::setBuffer(kGridComputeStage + 2, m_gridEntries[historyWrite], bgfx::Access::Write);
+		bgfx::setTexture(3, m_normalSampler, m_gbufferNormal);
+		bgfx::setTexture(4, m_depthSampler, m_gbufferDepth);
+		bgfx::setUniform(m_inverseViewProjection, inverseViewProjection);
 		bgfx::setUniform(m_frameInfo, frameInfo);
 		bgfx::setUniform(m_screenInfo, screenInfo);
-		bgfx::setUniform(m_sceneInfoUniform, sceneInfo);
+		bgfx::setUniform(m_gridInfoUniform, gridInfo);
+		bgfx::setUniform(m_gridCameraUniform, cameraPosition);
+		bgfx::dispatch(kGridInsertView, m_gridInsertProgram
+			, uint32_t(giWidth + 7) / 8, uint32_t(giHeight + 7) / 8, 1);
+
+		// Uniforms and textures both GI passes use (see shaders/restir.sh).
+		const auto setGiPassInputs = [&]()
+		{
+			bgfx::setTexture(0, m_albedoSampler, m_gbufferAlbedo);
+			bgfx::setTexture(1, m_normalSampler, m_gbufferNormal);
+			bgfx::setTexture(2, m_depthSampler, m_gbufferDepth);
+			// With the denoiser, the history is its first filtered iteration.
+			bgfx::setTexture(5, m_historyColorSampler
+				, m_denoiseEnabled ? m_filteredHistory[m_historyRead] : m_historyColor[m_historyRead]);
+			bgfx::setTexture(6, m_historyNormalSampler, m_historyNormal[m_historyRead]);
+			bgfx::setTexture(7, m_shadowSampler, m_shadowMap);
+			bgfx::setTexture(9, m_historyReceiverSampler, m_historyReceiver[m_historyRead]);
+			bgfx::setUniform(m_shadowViewProjUniform, shadowViewProj, 6);
+			bgfx::setUniform(m_shadowInfoUniform, shadowInfo);
+			bgfx::setUniform(m_shadowOptionsUniform, shadowOptions);
+			bgfx::setUniform(m_inverseViewProjection, inverseViewProjection);
+			bgfx::setUniform(m_viewProjection, viewProjection);
+			bgfx::setUniform(m_previousViewProjection, m_previousViewProj);
+			bgfx::setUniform(m_lightPosition, lightPosition);
+			bgfx::setUniform(m_lightColor, lightColor);
+			bgfx::setUniform(m_frameInfo, frameInfo);
+			bgfx::setUniform(m_screenInfo, screenInfo);
+			bgfx::setUniform(m_sceneInfoUniform, sceneInfo);
+			bgfx::setUniform(m_gridInfoUniform, gridInfo);
+		};
+		const auto setGrid = [](const bgfx::DynamicIndexBufferHandle* _buffers)
+		{
+			bgfx::setBuffer(kGridFragmentStage + 0, _buffers[0], bgfx::Access::Read);
+			bgfx::setBuffer(kGridFragmentStage + 1, _buffers[1], bgfx::Access::Read);
+			bgfx::setBuffer(kGridFragmentStage + 2, _buffers[2], bgfx::Access::Read);
+		};
+
+		// Temporal pass: fresh candidates, combined with reservoirs from last
+		// frame's grid, into this frame's reservoirs. Last frame's cell sizes
+		// were chosen from last frame's camera position.
+		bgfx::setMarker("ReSTIR GI Temporal");
+		bgfx::setViewName(1, "ReSTIR GI Temporal");
+		bgfx::setViewRect(1, 0, 0, giWidth, giHeight);
+		bgfx::setViewFrameBuffer(1, m_reservoirFrameBuffers[historyWrite]);
+		bgfx::setViewTransform(1, nullptr, nullptr);
+		setGiPassInputs();
+		bgfx::setTexture(3, m_historySampleSampler, m_historySample[m_historyRead]);
+		const bgfx::DynamicIndexBufferHandle previousGrid[] =
+		{
+			m_gridChecksums[m_historyRead], m_gridCounts[m_historyRead], m_gridEntries[m_historyRead],
+		};
+		setGrid(previousGrid);
+		bgfx::setUniform(m_gridCameraUniform, previousCameraPosition);
 		setFullscreenGeometry();
 		bgfx::setState(BGFX_STATE_WRITE_RGB | BGFX_STATE_WRITE_A);
-		bgfx::submit(1, m_restirProgram);
+		bgfx::submit(1, m_temporalProgram);
+
+		// Spatial pass: combined with other reservoirs from this frame's grid,
+		// shaded and accumulated for the denoiser.
+		bgfx::setMarker("ReSTIR GI Spatial");
+		bgfx::setViewName(kSpatialView, "ReSTIR GI Spatial");
+		bgfx::setViewRect(kSpatialView, 0, 0, giWidth, giHeight);
+		bgfx::setViewFrameBuffer(kSpatialView, m_shadeFrameBuffers[historyWrite]);
+		bgfx::setViewTransform(kSpatialView, nullptr, nullptr);
+		setGiPassInputs();
+		bgfx::setTexture(3, m_reservoirSampleSampler, m_historySample[historyWrite]);
+		bgfx::setTexture(4, m_reservoirReceiverSampler, m_historyReceiver[historyWrite]);
+		bgfx::setTexture(8, m_historyMomentsSampler, m_historyMoments[m_historyRead]);
+		bgfx::setTexture(10, m_reservoirNormalSampler, m_historyNormal[historyWrite]);
+		const bgfx::DynamicIndexBufferHandle currentGrid[] =
+		{
+			m_gridChecksums[historyWrite], m_gridCounts[historyWrite], m_gridEntries[historyWrite],
+		};
+		setGrid(currentGrid);
+		bgfx::setUniform(m_gridCameraUniform, cameraPosition);
+		setFullscreenGeometry();
+		bgfx::setState(BGFX_STATE_WRITE_RGB | BGFX_STATE_WRITE_A);
+		bgfx::submit(kSpatialView, m_spatialProgram);
 
 		// Denoiser: variance estimate into filter target 0, then the a-trous
 		// iterations. The first writes the filtered history for next frame,
@@ -967,6 +1135,7 @@ public:
 		bgfx::submit(2, m_compositeProgram);
 
 		bx::memCopy(m_previousViewProj, viewProjection, sizeof(m_previousViewProj));
+		m_previousEye = eye;
 		m_historyRead = historyWrite;
 		m_historyValid = true;
 		++m_frameNumber;
@@ -996,14 +1165,20 @@ private:
 		}
 		for (uint8_t idx = 0; idx < 2; ++idx)
 		{
-			if (bgfx::isValid(m_historyFrameBuffers[idx]))
+			if (bgfx::isValid(m_reservoirFrameBuffers[idx]))
 			{
-				bgfx::destroy(m_historyFrameBuffers[idx]);
-				m_historyFrameBuffers[idx] = BGFX_INVALID_HANDLE;
-				m_historyColor[idx] = BGFX_INVALID_HANDLE;
+				bgfx::destroy(m_reservoirFrameBuffers[idx]);
+				m_reservoirFrameBuffers[idx] = BGFX_INVALID_HANDLE;
 				m_historySample[idx] = BGFX_INVALID_HANDLE;
 				m_historyReceiver[idx] = BGFX_INVALID_HANDLE;
 				m_historyNormal[idx] = BGFX_INVALID_HANDLE;
+			}
+
+			if (bgfx::isValid(m_shadeFrameBuffers[idx]))
+			{
+				bgfx::destroy(m_shadeFrameBuffers[idx]);
+				m_shadeFrameBuffers[idx] = BGFX_INVALID_HANDLE;
+				m_historyColor[idx] = BGFX_INVALID_HANDLE;
 				m_historyMoments[idx] = BGFX_INVALID_HANDLE;
 			}
 
@@ -1070,12 +1245,12 @@ private:
 		const uint16_t giWidth = uint16_t(std::max(1u, _width / 2));
 		const uint16_t giHeight = uint16_t(std::max(1u, _height / 2));
 
-		if (bgfx::getCaps()->limits.maxFBAttachments < 5
+		if (bgfx::getCaps()->limits.maxFBAttachments < 3
 		||  !bgfx::isTextureValid(0, false, 1, bgfx::TextureFormat::RGBA16F, BGFX_TEXTURE_RT)
 		||  !bgfx::isTextureValid(0, false, 1, bgfx::TextureFormat::RGBA32F, BGFX_TEXTURE_RT))
 		{
 			throw std::runtime_error(
-				"ReSTIR GI requires five framebuffer attachments and RGBA16F/RGBA32F render targets.");
+				"ReSTIR GI requires three framebuffer attachments and RGBA16F/RGBA32F render targets.");
 		}
 
 		m_gbufferAlbedo = bgfx::createTexture2D(
@@ -1103,11 +1278,12 @@ private:
 
 		for (uint8_t idx = 0; idx < 2; ++idx)
 		{
-			// History spans five targets: the accumulated (demodulated) estimate,
-			// the sample position + M, the receiver position + W, the receiver
-			// normal (needed by the pairwise MIS weights), and the luminance
-			// moments + history length (needed by the denoiser). Positions need
-			// full float precision, and all of them must be point sampled.
+			// Per frame parity, the temporal pass writes the reservoirs (sample
+			// position + M, receiver position + W, receiver normal, which the
+			// pairwise MIS weights need), and the spatial pass writes the
+			// accumulated (demodulated) estimate and the luminance moments +
+			// history length (needed by the denoiser). Positions need full
+			// float precision, and all of them must be point sampled.
 			m_historyColor[idx] = bgfx::createTexture2D(
 				  giWidth, giHeight, false, 1, bgfx::TextureFormat::RGBA16F
 				, BGFX_TEXTURE_RT | samplerFlags
@@ -1128,13 +1304,18 @@ private:
 				  giWidth, giHeight, false, 1, bgfx::TextureFormat::RGBA16F
 				, BGFX_TEXTURE_RT | samplerFlags
 				);
-			const bgfx::TextureHandle historyTextures[] =
+			const bgfx::TextureHandle reservoirTextures[] =
 			{
-				m_historyColor[idx], m_historySample[idx], m_historyReceiver[idx], m_historyNormal[idx],
-				m_historyMoments[idx],
+				m_historySample[idx], m_historyReceiver[idx], m_historyNormal[idx],
 			};
-			m_historyFrameBuffers[idx] = bgfx::createFrameBuffer(
-				BX_COUNTOF(historyTextures), historyTextures, true);
+			m_reservoirFrameBuffers[idx] = bgfx::createFrameBuffer(
+				BX_COUNTOF(reservoirTextures), reservoirTextures, true);
+			const bgfx::TextureHandle shadeTextures[] =
+			{
+				m_historyColor[idx], m_historyMoments[idx],
+			};
+			m_shadeFrameBuffers[idx] = bgfx::createFrameBuffer(
+				BX_COUNTOF(shadeTextures), shadeTextures, true);
 
 			// Denoiser: the filtered history (one per frame parity, like the
 			// rest of the history) and two ping-pong targets.
@@ -1150,8 +1331,9 @@ private:
 			m_filterFrameBuffers[idx] = bgfx::createFrameBuffer(1, &m_filterTextures[idx], true);
 		}
 
-		if (!bgfx::isValid(m_gbuffer) || !bgfx::isValid(m_historyFrameBuffers[0])
-		||  !bgfx::isValid(m_historyFrameBuffers[1])
+		if (!bgfx::isValid(m_gbuffer)
+		||  !bgfx::isValid(m_reservoirFrameBuffers[0]) || !bgfx::isValid(m_reservoirFrameBuffers[1])
+		||  !bgfx::isValid(m_shadeFrameBuffers[0]) || !bgfx::isValid(m_shadeFrameBuffers[1])
 		||  !bgfx::isValid(m_filteredHistoryFrameBuffers[0]) || !bgfx::isValid(m_filteredHistoryFrameBuffers[1])
 		||  !bgfx::isValid(m_filterFrameBuffers[0]) || !bgfx::isValid(m_filterFrameBuffers[1]))
 		{
@@ -1216,13 +1398,15 @@ private:
 	bgfx::TextureHandle m_historySample[2];
 	bgfx::TextureHandle m_historyReceiver[2];
 	bgfx::TextureHandle m_historyNormal[2];
-	bgfx::FrameBufferHandle m_historyFrameBuffers[2];
+	bgfx::FrameBufferHandle m_reservoirFrameBuffers[2]; // sample, receiver, normal
+	bgfx::FrameBufferHandle m_shadeFrameBuffers[2];     // colour, moments
 	uint8_t m_historyRead;
 	bool m_historyValid;
 	uint32_t m_targetWidth;
 	uint32_t m_targetHeight;
 	bgfx::ProgramHandle m_geometryProgram;
-	bgfx::ProgramHandle m_restirProgram;
+	bgfx::ProgramHandle m_temporalProgram;
+	bgfx::ProgramHandle m_spatialProgram;
 	bgfx::ProgramHandle m_compositeProgram;
 	bgfx::UniformHandle m_lightPosition;
 	bgfx::UniformHandle m_lightColor;
@@ -1278,6 +1462,21 @@ private:
 	bgfx::UniformHandle m_atrousInfoUniform;
 	bool m_denoiseEnabled;
 	bool m_denoiseKeyDown;
+
+	// World-space hash grid, one per frame parity like the reservoirs.
+	bgfx::DynamicIndexBufferHandle m_gridChecksums[2];
+	bgfx::DynamicIndexBufferHandle m_gridCounts[2];
+	bgfx::DynamicIndexBufferHandle m_gridEntries[2];
+	bgfx::ProgramHandle m_gridClearProgram = BGFX_INVALID_HANDLE;
+	bgfx::ProgramHandle m_gridInsertProgram = BGFX_INVALID_HANDLE;
+	bgfx::UniformHandle m_reservoirSampleSampler = BGFX_INVALID_HANDLE;
+	bgfx::UniformHandle m_reservoirReceiverSampler = BGFX_INVALID_HANDLE;
+	bgfx::UniformHandle m_reservoirNormalSampler = BGFX_INVALID_HANDLE;
+	bgfx::UniformHandle m_gridInfoUniform = BGFX_INVALID_HANDLE;
+	bgfx::UniformHandle m_gridCameraUniform = BGFX_INVALID_HANDLE;
+	bx::Vec3 m_previousEye = { 0.0f, 0.0f, 0.0f };
+	bool m_worldSpaceReuse = true;
+	bool m_gridKeyDown = false;
 };
 
 } // namespace
