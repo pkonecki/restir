@@ -77,12 +77,37 @@ usually leave the metallic factor at its default of 1.
 The camera flies freely. Hold the left mouse button and drag to look around;
 use W, A, S and D to move forward, left, back and right, and Shift and Ctrl
 to move up and down. The speed follows the scene's size, and the mouse wheel
-scales it. Press B to switch between single-bounce and multi-bounce indirect
-light, H to turn shadows on or off, N to turn the denoiser on or off, G to
-switch reservoir reuse between the world-space hash grid and screen-space
-neighbourhoods, and M to switch models. Surfaces seen from behind are not
-drawn, so the walls nearest the camera disappear and the interior stays
-visible from any side.
+scales it. Surfaces seen from behind are not drawn, so the walls nearest the
+camera disappear and the interior stays visible from any side.
+
+### Settings window
+
+Every toggle and setting is in the **ReSTIR GI** window (Dear ImGui, as
+bundled with bgfx's example code); new ones belong there too. It has three
+sections:
+
+- **Scene**: the model (M cycles through them) and the camera speed.
+- **Rendering**: multiple bounces (B), shadows (H), the denoiser (N), and
+  whether reservoirs are reused through the world-space hash grid or from
+  screen-space neighbourhoods (G).
+- **Performance**: frames per second with a frame time plot, and the GPU time
+  of each group of passes (shadow map, G-buffer, hash grid, ReSTIR temporal
+  and spatial, denoiser, composite), measured with bgfx's per-view profiler.
+  They need GPU timer queries; WebGPU offers them only in browsers that expose
+  `timestamp-query`. Below them are the levers that trade quality for speed:
+
+  | Setting | Default | Effect |
+  | --- | --- | --- |
+  | VSync | on | Off to measure how fast frames can go (also F7). |
+  | GI resolution | half | Size of every ReSTIR and denoiser target: full, half or quarter of the window. The GI cost follows the pixel count. |
+  | Shadow map face | 512 | Texels per side of each of the six cube faces, 256 to 2048. |
+  | Denoiser iterations | 5 | A-trous passes, 1 to 5; each doubles the filter radius. |
+  | Rays per pixel | 2 | Fresh candidates traced each frame in the temporal pass. |
+  | Temporal taps | 2 | Reservoirs reused from last frame. |
+  | Spatial taps | 4 | Reservoirs reused from this frame, each with a visibility ray. |
+  | Ray march steps | 32 | Depth buffer steps per ray. Rays reach as far with fewer, coarser steps, but miss thin geometry. |
+
+  **Reset to defaults** restores them.
 
 ## Web build (WebGPU)
 
@@ -169,10 +194,11 @@ The shared lookup is in `shaders/shadow.sh`.
 
 ## How the GI pass works
 
-GI runs at half resolution. Each pixel's receiver (the surface it sees) keeps
-one reservoir, and reservoirs are reused between receivers that are close in
-the scene, found through a world-space hash grid as in Boissé 2021, rather
-than between pixels that are close on screen. Each frame:
+GI runs at half resolution by default. Each pixel's receiver (the surface it
+sees) keeps one reservoir, and reservoirs are reused between receivers that
+are close in the scene, found through a world-space hash grid as in Boissé
+2021, rather than between pixels that are close on screen. Each frame (the counts below
+are the defaults; the settings window changes them):
 
 1. **Hash grid** (`shaders/cs_grid_clear.sc`, `shaders/cs_grid_insert.sc`,
    `shaders/hashgrid.sh`): two compute passes clear this frame's grid and
@@ -210,27 +236,34 @@ denoiser off, the world-space grid is visibly less noisy under camera motion.
 
 Differences from the paper: it resamples ray-traced path vertices over
 several spatial passes, while this example traces rays through the depth
-buffer and runs a single spatial pass. Cells keep the first 32 pixels to arrive rather
-than a uniform choice, which does not bias anything, since which reservoirs a
-cell lists does not depend on what they hold. The shared helpers and the
-pairwise MIS are in `shaders/restir.sh`.
+buffer and runs a single spatial pass. Cells keep the first 32 pixels to
+arrive rather than a uniform choice, which does not bias anything, since which
+reservoirs a cell lists does not depend on what they hold. The shared helpers
+and the pairwise MIS are in `shaders/restir.sh`.
 
 With multiple bounces enabled, a sample point is shaded with its direct light
 plus the indirect light that left it in the previous frame, read back from
 the denoised history. Each frame thus adds one bounce, and the lighting
-converges to all bounces within a few frames. The composite
-pass upsamples the result with a geometry-aware filter and adds direct PBR
-lighting.
+converges to all bounces within a few frames. The composite pass upsamples the
+result with a geometry-aware filter and adds direct PBR lighting.
 
 Known limits: rays only see the depth buffer, so off-screen, occluded and
-back-facing geometry cannot contribute, which also caps the extra bounces.
-For the same reason, a reservoir reused from the grid is dropped when its
-sample point is no longer visible on screen;
-bounced light lags a few frames behind camera motion; shadow edges have a
-fixed softness rather than one that matches the size of the light; and
-screen-space visibility and the clamped reconnection Jacobian leave a bias of
-a few percent. This is a real-time
+back-facing geometry cannot contribute, which also caps the extra bounces. For
+the same reason, a reservoir reused from the grid is dropped when its sample
+point is no longer visible on screen. Bounced light lags a few frames behind
+camera motion; shadow edges have a fixed softness rather than one that matches
+the size of the light; and screen-space visibility and the clamped
+reconnection Jacobian leave a bias of a few percent. This is a real-time
 demonstration, not an unbiased multi-bounce path tracer.
+
+## Visual Studio Code
+
+Install the Microsoft C/C++ extension. Use **Ctrl+Shift+B** to configure and
+build the Debug target, or select **Debug ReSTIR GI** in the Run and Debug
+view (F5) to build and launch it from the directory that holds its shaders
+and assets.
+
+## Credits
 
 The Cornell box model is "Cornell Box- Original" by t-ly, downloaded from
 [Sketchfab](https://sketchfab.com/3d-models/cornell-box-original-0d18de8d108c4c9cab1a4405698cc6b6)
@@ -241,10 +274,3 @@ This work is based on "Cornell Box- Original"
 (https://sketchfab.com/3d-models/cornell-box-original-0d18de8d108c4c9cab1a4405698cc6b6)
 by t-ly (https://sketchfab.com/t-ly) licensed under CC-BY-4.0
 (http://creativecommons.org/licenses/by/4.0/).
-
-## Visual Studio Code
-
-Install the Microsoft C/C++ extension. Use **Ctrl+Shift+B** to configure and
-build the Debug target, or select **Debug ReSTIR GI** in the Run and Debug
-view (F5) to build and launch it with the shader directory as its working
-directory.

@@ -43,6 +43,7 @@ uniform vec4 u_lightColor;
 uniform vec4 u_frameInfo;  // x: frame index, y: history valid, z: origin bottom-left, w: multiple bounces
 uniform vec4 u_screenInfo; // xy: GI target size, zw: GI texel size
 uniform vec4 u_sceneInfo;  // x: scene scale (see main.cpp)
+uniform vec4 u_restirOptions; // x: initial candidates, y: temporal taps, z: spatial taps, w: trace steps
 
 #define SHADOW_SAMPLER_STAGE 7
 #include "shadow.sh"
@@ -53,7 +54,12 @@ uniform vec4 u_sceneInfo;  // x: scene scale (see main.cpp)
 #define GRID_ENTRY_STAGE    13
 #include "hashgrid.sh"
 
-#define TRACE_STEPS  32
+// Sample counts, set from the settings window (see main.cpp).
+#define kInitialCandidates int(u_restirOptions.x)
+#define kTemporalTaps      int(u_restirOptions.y)
+#define kSpatialTaps       int(u_restirOptions.z)
+#define kTraceSteps        int(u_restirOptions.w)
+#define kReferenceTraceSteps 32.0 // the step spacing below was tuned for this many steps
 #define REFINE_STEPS 5
 
 // These are #defines on purpose. HLSL turns a global "const float" into a
@@ -275,14 +281,19 @@ bool traceScreenSpaceRay(
 	float previousDistance = 0.0;
 	bool previousInFront = true;
 
-	for (int stepIndex = 1; stepIndex <= TRACE_STEPS; ++stepIndex)
+	// Steps grow quadratically and reach kMaxRayDistance after the reference
+	// count; other counts keep that reach with coarser or finer steps.
+	int traceSteps = kTraceSteps;
+	float stepScale = kReferenceTraceSteps / float(traceSteps);
+	for (int stepIndex = 1; stepIndex <= traceSteps; ++stepIndex)
 	{
 		if (previousDistance >= _maxDistance)
 		{
 			break;
 		}
 
-		float rayDistance = min((0.02 + float(stepIndex * stepIndex) * 0.0035) * kSceneScale, _maxDistance);
+		float stepPosition = float(stepIndex) * stepScale;
+		float rayDistance = min((0.02 + stepPosition * stepPosition * 0.0035) * kSceneScale, _maxDistance);
 		vec2 uv;
 		vec3 surfacePosition;
 		bool onScreen;
