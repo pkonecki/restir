@@ -1,0 +1,17 @@
+{
+	"version": "0.2.0",
+	"configurations": [
+		{
+			"name": "Debug ReSTIR GI",
+			"type": "cppvsdbg",
+			"request": "launch",
+			"program": "${workspaceFolder}\\build\\Debug\\restir_gi.exe",
+			"args": [],
+			"stopAtEntry": false,
+			"cwd": "${workspaceFolder}\\build\\Debug",
+			"environment": [],
+			"console": "integratedTerminal",
+			"preLaunchTask": "Build ReSTIR GI"
+		}
+	]
+}

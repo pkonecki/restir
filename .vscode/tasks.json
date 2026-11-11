@@ -1,0 +1,43 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "Configure CMake",
+			"type": "process",
+			"command": "cmake",
+			"args": [
+				"-S",
+				"${workspaceFolder}",
+				"-B",
+				"${workspaceFolder}\\build"
+			],
+			"problemMatcher": []
+		},
+		{
+			"label": "Build ReSTIR GI",
+			"type": "process",
+			"command": "cmake",
+			"args": [
+				"--build",
+				"${workspaceFolder}\\build",
+				"--config",
+				"Debug",
+				"--parallel",
+				"--target",
+				"restir_gi",
+				"--",
+				"/p:UseMultiToolTask=true",
+				"/p:EnforceProcessCountAcrossBuilds=true"
+			],
+			"dependsOn": "Configure CMake",
+			"dependsOrder": "sequence",
+			"group": {
+				"kind": "build",
+				"isDefault": true
+			},
+			"problemMatcher": [
+				"$msCompile"
+			]
+		}
+	]
+}
