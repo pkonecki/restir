@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ReSTIR GI</title>
+<style>
+	html, body { margin: 0; height: 100%; background: #20242b; color: #ddd; font: 14px sans-serif; }
+	body { display: flex; flex-direction: column; align-items: center; justify-content: center; }
+	canvas { display: block; outline: none; max-width: 100%; }
+	#status { margin: 8px; min-height: 1.2em; text-align: center; }
+</style>
+</head>
+<body>
+<canvas id="canvas" width="1280" height="720" tabindex="-1" oncontextmenu="event.preventDefault()"></canvas>
+<div id="status">Loading...</div>
+<script>
+	const statusElement = document.getElementById('status');
+	const webgpuSupported = !!navigator.gpu;
+	let failed = false;
+	const setStatus = (text) => { if (!failed) statusElement.textContent = text; };
+	const fail = (text) => { setStatus(text); failed = true; };
+
+	var Module = {
+		canvas: document.getElementById('canvas'),
+		// The renderer needs WebGPU, so do not start without it.
+		noInitialRun: !webgpuSupported,
+		setStatus: (text) => setStatus(text || 'Drag to orbit, wheel to zoom, B: bounces, S: shadows, D: denoiser.'),
+		print: (text) => console.log(text),
+		printErr: (text) => console.error(text),
+		onAbort: () => fail('The renderer stopped with an error, see the browser console.'),
+	};
+
+	if (!webgpuSupported) {
+		fail('This browser does not support WebGPU, or the page is not served over HTTPS or from localhost.');
+	}
+	window.addEventListener('error', () => fail('The renderer stopped with an error, see the browser console.'));
+</script>
+{{{ SCRIPT }}}
+</body>
+</html>
