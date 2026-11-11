@@ -4,30 +4,41 @@
 		{
 			"label": "Configure CMake",
 			"type": "process",
-			"command": "cmake",
+			"command": "cmd.exe",
 			"args": [
+				"/d",
+				"/c",
+				"${workspaceFolder}\\.vscode\\msvc.cmd",
+				"cmake",
 				"-S",
 				"${workspaceFolder}",
 				"-B",
 				"${workspaceFolder}\\build"
 			],
+			"options": {
+				// Used only when the build directory is configured for the first
+				// time; an existing one keeps the generator it was created with.
+				"env": {
+					"CMAKE_GENERATOR": "Ninja Multi-Config"
+				}
+			},
 			"problemMatcher": []
 		},
 		{
 			"label": "Build ReSTIR GI",
 			"type": "process",
-			"command": "cmake",
+			"command": "cmd.exe",
 			"args": [
+				"/d",
+				"/c",
+				"${workspaceFolder}\\.vscode\\msvc.cmd",
+				"cmake",
 				"--build",
 				"${workspaceFolder}\\build",
 				"--config",
 				"Debug",
-				"--parallel",
 				"--target",
-				"restir_gi",
-				"--",
-				"/p:UseMultiToolTask=true",
-				"/p:EnforceProcessCountAcrossBuilds=true"
+				"restir_gi"
 			],
 			"dependsOn": "Configure CMake",
 			"dependsOrder": "sequence",
