@@ -123,6 +123,7 @@ struct Settings
 	bool denoiser = true;
 	bool worldSpaceReuse = true;
 	bool vsync = true;
+	bool hideWindowInScreenshots = true;
 
 	int debugView = int(DebugView::Final);
 

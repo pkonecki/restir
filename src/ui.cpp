@@ -97,6 +97,60 @@ SettingsWindowOutput drawSettingsWindow(const SettingsWindowInput& _input, Setti
 		ImGui::SliderFloat("Camera speed", &_camera.m_speedScale, 0.05f, 20.0f, "x%.2f"
 			, sliderFlags | ImGuiSliderFlags_Logarithmic);
 		ImGui::SetItemTooltip("WASD move, Shift/Ctrl up/down, drag to look, wheel for speed.");
+
+		ImGui::SeparatorText("Views");
+		for (std::size_t idx = 0; idx < _input.m_bookmarks.size(); ++idx)
+		{
+			const CameraPose& pose = _input.m_bookmarks[idx];
+			ImGui::PushID(int(idx));
+			char label[16];
+			bx::snprintf(label, sizeof(label), "%d", int(idx + 1));
+			if (ImGui::Button(label, ImVec2(ImGui::GetFrameHeight(), 0.0f)))
+			{
+				output.m_goToBookmark = idx;
+			}
+			ImGui::SetItemTooltip("Go to this view (%d).", int(idx + 1));
+			ImGui::SameLine();
+			ImGui::Text("(%.2f, %.2f, %.2f)  yaw %.0f  pitch %.0f"
+				, pose.m_eye.x, pose.m_eye.y, pose.m_eye.z, bx::toDeg(pose.m_yaw), bx::toDeg(pose.m_pitch));
+			ImGui::SameLine();
+			if (ImGui::SmallButton("x"))
+			{
+				output.m_removeBookmark = idx;
+			}
+			ImGui::SetItemTooltip("Forget this view.");
+			ImGui::PopID();
+		}
+		ImGui::BeginDisabled(_input.m_bookmarks.size() >= kMaxBookmarks);
+		if (ImGui::Button("Save this view"))
+		{
+			output.m_addBookmark = true;
+		}
+		ImGui::EndDisabled();
+		ImGui::SetItemTooltip("Kept per model in camera_bookmarks.txt; keys 1-9 recall them.");
+		if (!_input.m_bookmarkError.empty())
+		{
+			ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "%s", _input.m_bookmarkError.c_str());
+		}
+
+		char pose[160];
+		bx::strCopy(pose, sizeof(pose), formatPose(_input.m_cameraPose).c_str());
+		ImGui::SetNextItemWidth(-FLT_MIN);
+		ImGui::InputText("##pose", pose, sizeof(pose), ImGuiInputTextFlags_ReadOnly);
+		ImGui::SetItemTooltip("This view, as --camera takes it (x,y,z,yaw,pitch).");
+
+		ImGui::SeparatorText("Screenshot");
+		if (ImGui::Button("Save screenshot (P)"))
+		{
+			output.m_screenshot = true;
+		}
+		ImGui::SetItemTooltip("A PNG in screenshots/, named after the time.");
+		ImGui::SameLine();
+		ImGui::Checkbox("Hide this window", &_settings.hideWindowInScreenshots);
+		if (!_input.m_screenshotResult.empty())
+		{
+			ImGui::TextDisabled("%s", _input.m_screenshotResult.c_str());
+		}
 	}
 
 	if (ImGui::CollapsingHeader("Light", ImGuiTreeNodeFlags_DefaultOpen))

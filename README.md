@@ -74,6 +74,16 @@ that cannot be read is skipped with a warning; if it was a metallic-roughness
 texture, its material is treated as non-metallic, since models with one
 usually leave the metallic factor at its default of 1.
 
+A few more command line options help with repeatable comparisons:
+
+```sh
+restir_gi --camera 0,1,4.5,0,0.1 --no-ui --screenshot out --screenshot-frame 120
+```
+
+`--camera x,y,z,yaw,pitch` starts from that view, `--no-ui` hides the
+settings window (F2 toggles it), and `--screenshot` (bgfx's own option)
+saves `out.png` after the given frame and exits.
+
 The camera flies freely. Hold the left mouse button and drag to look around;
 use W, A, S and D to move forward, left, back and right, and Shift and Ctrl
 to move up and down. The speed follows the scene's size, and the mouse wheel
@@ -87,6 +97,14 @@ bundled with bgfx's example code); new ones belong there too. It has these
 sections:
 
 - **Scene**: the model (M cycles through them) and the camera speed.
+  Below them:
+  - **Views**: saved camera views for the current model (**Save this view**;
+    keys 1 to 9 recall them), kept in `camera_bookmarks.txt` in the working
+    directory. The text field shows the current view as
+    `x,y,z,yaw,pitch`, the form `--camera` takes.
+  - **Screenshot** (P): saves a PNG in `screenshots/`, named after the time,
+    without the settings window unless **Hide this window** is unchecked. In
+    the web build the browser downloads it.
 - **Light**: the point light's position (drag the fields, or press L to move
   it to the camera), colour and intensity (relative to the default, which
   scales with the scene size), and an orbit that circles it around the

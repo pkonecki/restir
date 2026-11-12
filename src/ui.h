@@ -3,6 +3,7 @@
 // The ReSTIR GI settings window (Dear ImGui) and the timings it shows. Every
 // toggle and setting belongs in this window.
 
+#include "bookmarks.h"
 #include "renderer.h"
 #include "settings.h"
 
@@ -46,6 +47,10 @@ struct SettingsWindowInput
 	uint32_t m_giHeight;
 	float m_sceneRadius;
 	bx::Vec3 m_defaultLightPosition; // where describeScene put the light
+	const std::vector<CameraPose>& m_bookmarks; // the current model's
+	const std::string& m_bookmarkError;
+	CameraPose m_cameraPose;
+	const std::string& m_screenshotResult;
 };
 
 // What the window asks the application to do.
@@ -53,6 +58,10 @@ struct SettingsWindowOutput
 {
 	std::optional<std::size_t> m_switchModel;
 	bool m_moveLightToCamera = false;
+	bool m_screenshot = false;
+	bool m_addBookmark = false;
+	std::optional<std::size_t> m_goToBookmark;
+	std::optional<std::size_t> m_removeBookmark;
 };
 
 // Draws the window. Settings change in place; the caller reacts to what

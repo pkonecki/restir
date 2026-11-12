@@ -5,3 +5,6 @@
 /build-web/
 /emsdk/
 /site/
+# Written by the app in its working directory.
+/screenshots/
+/camera_bookmarks.txt

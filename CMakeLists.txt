@@ -132,8 +132,12 @@ file(GLOB RESTIR_SHADER_SOURCES CONFIGURE_DEPENDS
 
 add_executable(restir_gi
 	src/main.cpp
+	src/bookmarks.cpp
+	src/bookmarks.h
 	src/camera.cpp
 	src/camera.h
+	src/capture.cpp
+	src/capture.h
 	src/renderer.cpp
 	src/renderer.h
 	src/scene.cpp

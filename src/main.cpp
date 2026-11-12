@@ -3,7 +3,9 @@
 // loader is in scene.cpp, the fly camera in camera.cpp and the settings
 // window in ui.cpp.
 
+#include "bookmarks.h"
 #include "camera.h"
+#include "capture.h"
 #include "renderer.h"
 #include "scene.h"
 #include "settings.h"
@@ -21,6 +23,7 @@
 #include <cmath>
 #include <cstdio>
 #include <filesystem>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -81,6 +84,20 @@ public:
 			throw std::runtime_error("No model found: pass one with --model.");
 		}
 
+		// --camera x,y,z,yaw,pitch starts the first model from that view (the
+		// settings window shows the current one in this form).
+		std::optional<CameraPose> startPose;
+		if (const char* cameraOption = commandLine.findOption("camera"))
+		{
+			startPose = parsePose(cameraOption);
+			if (!startPose)
+			{
+				std::fprintf(stderr, "Ignoring --camera %s: expected x,y,z,yaw,pitch.\n", cameraOption);
+			}
+		}
+		// --no-ui starts with the settings window hidden (F2 toggles it).
+		m_showWindow = !commandLine.hasArg("no-ui");
+
 		m_width  = _width;
 		m_height = _height;
 		// The profiler records the per-view GPU timings the settings window shows.
@@ -96,6 +113,7 @@ public:
 		init.swapChain.width   = m_width;
 		init.swapChain.height  = m_height;
 		init.reset             = m_reset;
+		init.callback          = &m_capture;
 		bgfx::init(init);
 
 		bgfx::setDebug(m_debug);
@@ -107,6 +125,10 @@ public:
 		// The first model must load; a failure while switching later only
 		// keeps the current one.
 		setModel(0, loadScene(m_modelPaths[0]));
+		if (startPose)
+		{
+			setCameraPose(*startPose);
+		}
 	}
 
 	int shutdown() override
@@ -145,21 +167,13 @@ public:
 		updateKeyboardShortcuts();
 		m_stats.update();
 
-		const uint32_t giDivisor = std::max(m_renderer.giDivisor(), 1u);
-		const SettingsWindowInput windowInput =
+		// A screenshot asked for last frame is taken this frame, without the
+		// window if so chosen.
+		const bool takeScreenshot = m_screenshotRequested;
+		m_screenshotRequested = false;
+		if (m_showWindow && !(takeScreenshot && m_settings.hideWindowInScreenshots))
 		{
-			m_modelPaths, m_modelIndex, m_modelError, m_stats,
-			std::max(1u, m_width / giDivisor), std::max(1u, m_height / giDivisor),
-			m_scene.m_radius, m_scene.m_lightPosition,
-		};
-		const SettingsWindowOutput windowOutput = drawSettingsWindow(windowInput, m_settings, m_camera);
-		if (windowOutput.m_switchModel)
-		{
-			switchModel(*windowOutput.m_switchModel);
-		}
-		if (windowOutput.m_moveLightToCamera)
-		{
-			moveLightToCamera();
+			drawWindow();
 		}
 		applySettingChanges();
 		updateLight();
@@ -179,6 +193,10 @@ public:
 		frame.m_eye = m_camera.eye();
 		frame.m_deltaTime = m_deltaTime;
 		m_renderer.render(frame, m_settings);
+		if (takeScreenshot)
+		{
+			bgfx::requestScreenShot(BGFX_INVALID_HANDLE, makeScreenshotPath().c_str());
+		}
 
 		bgfx::setMarker("Present");
 		bgfx::frame();
@@ -186,6 +204,68 @@ public:
 	}
 
 private:
+	void drawWindow()
+	{
+		const uint32_t giDivisor = std::max(m_renderer.giDivisor(), 1u);
+		const std::string& model = m_modelPaths[m_modelIndex];
+		const std::string screenshotResult = m_capture.lastResult();
+		const SettingsWindowInput windowInput =
+		{
+			m_modelPaths, m_modelIndex, m_modelError, m_stats,
+			std::max(1u, m_width / giDivisor), std::max(1u, m_height / giDivisor),
+			m_scene.m_radius, m_scene.m_lightPosition,
+			m_bookmarks.get(model), m_bookmarks.error(), cameraPose(), screenshotResult,
+		};
+		const SettingsWindowOutput windowOutput = drawSettingsWindow(windowInput, m_settings, m_camera);
+		if (windowOutput.m_switchModel)
+		{
+			switchModel(*windowOutput.m_switchModel);
+		}
+		if (windowOutput.m_moveLightToCamera)
+		{
+			moveLightToCamera();
+		}
+		if (windowOutput.m_screenshot)
+		{
+			m_screenshotRequested = true;
+		}
+		if (windowOutput.m_addBookmark)
+		{
+			m_bookmarks.add(model, cameraPose());
+		}
+		if (windowOutput.m_goToBookmark)
+		{
+			goToBookmark(*windowOutput.m_goToBookmark);
+		}
+		if (windowOutput.m_removeBookmark)
+		{
+			m_bookmarks.remove(model, *windowOutput.m_removeBookmark);
+		}
+	}
+
+	CameraPose cameraPose() const
+	{
+		CameraPose pose;
+		pose.m_eye = m_camera.eye();
+		pose.m_yaw = m_camera.yaw();
+		pose.m_pitch = m_camera.pitch();
+		return pose;
+	}
+
+	void setCameraPose(const CameraPose& _pose)
+	{
+		m_camera.setPose(_pose.m_eye, _pose.m_yaw, _pose.m_pitch);
+	}
+
+	void goToBookmark(std::size_t _index)
+	{
+		const std::vector<CameraPose>& bookmarks = m_bookmarks.get(m_modelPaths[m_modelIndex]);
+		if (_index < bookmarks.size())
+		{
+			setCameraPose(bookmarks[_index]);
+		}
+	}
+
 	// True on the frame _key goes down; _wasDown remembers its state.
 	static bool keyPressed(entry::Key::Enum _key, bool& _wasDown)
 	{
@@ -235,6 +315,23 @@ private:
 		if (keyPressed(entry::Key::KeyL, m_lightKeyDown))
 		{
 			moveLightToCamera();
+		}
+		if (keyPressed(entry::Key::KeyP, m_screenshotKeyDown)
+		&&  0 == (inputGetModifiersState() & (entry::Modifier::LeftCtrl | entry::Modifier::RightCtrl)))
+		{
+			// (Ctrl+P is bgfx's own screenshot, taken with the window.)
+			m_screenshotRequested = true;
+		}
+		if (keyPressed(entry::Key::F2, m_windowKeyDown))
+		{
+			m_showWindow = !m_showWindow;
+		}
+		for (std::size_t idx = 0; idx < kMaxBookmarks; ++idx)
+		{
+			if (keyPressed(entry::Key::Enum(entry::Key::Key1 + idx), m_bookmarkKeyDown[idx]))
+			{
+				goToBookmark(idx);
+			}
 		}
 	}
 
@@ -325,6 +422,7 @@ private:
 	uint32_t m_debug = 0;
 	uint32_t m_reset = 0;
 
+	CaptureCallback m_capture; // must outlive bgfx
 	Renderer m_renderer;
 	Settings m_settings;
 	Settings m_appliedSettings; // as of the last applySettingChanges
@@ -345,6 +443,13 @@ private:
 	bool m_lightKeyDown = false;
 	bool m_tonemapKeyDown = false;
 	bool m_viewKeyDown = false;
+	bool m_screenshotKeyDown = false;
+	bool m_windowKeyDown = false;
+	bool m_bookmarkKeyDown[kMaxBookmarks] = {};
+
+	CameraBookmarks m_bookmarks;
+	bool m_screenshotRequested = false;
+	bool m_showWindow = true;
 
 	int64_t m_lastFrameTime = 0;
 	float m_deltaTime = 0.0f; // seconds since the last frame, at most 0.1
