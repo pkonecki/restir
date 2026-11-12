@@ -35,6 +35,18 @@ jobs:
             sudo timeout 600 apt-get install -y --no-install-recommends libx11-dev libgl-dev
           fi
 
+      # The runner has no GPU drivers at all, not even software ones (bgfx
+      # falls back to its no-op renderer), so the frame below needs Mesa's
+      # llvmpipe and lavapipe. apt may not reach a mirror (see pages.yml):
+      # then the build is still checked, and the frame is skipped.
+      - name: Install Mesa's software drivers
+        id: mesa
+        continue-on-error: true
+        run: |
+          sudo timeout 600 apt-get update -o Acquire::Retries=3
+          sudo timeout 600 apt-get install -y --no-install-recommends \
+            libgl1-mesa-dri libglx-mesa0 mesa-vulkan-drivers
+
       - name: Configure
         run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DBGFX_WITH_WAYLAND=OFF
 
@@ -48,6 +60,7 @@ jobs:
       # left to choose, bgfx may pick Direct3D through DXVK, whose shaders a
       # Linux build does not have.
       - name: Render a frame
+        if: steps.mesa.outcome == 'success'
         working-directory: build
         run: |
           for renderer in vk gl; do
@@ -61,6 +74,7 @@ jobs:
           test -f smoke.png
 
       - name: Check the frame is not blank
+        if: steps.mesa.outcome == 'success'
         working-directory: build
         run: python3 ../.github/scripts/check_screenshot.py smoke.png
 

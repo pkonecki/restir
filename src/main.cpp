@@ -159,6 +159,10 @@ public:
 		// bgfx falls back to another renderer when the requested one fails,
 		// which matters for the shaders found: say which one runs.
 		std::fprintf(stderr, "Renderer: %s\n", bgfx::getRendererName(bgfx::getRendererType()));
+		if (bgfx::getRendererType() == bgfx::RendererType::Noop)
+		{
+			throw std::runtime_error("No GPU renderer could start (bgfx fell back to its no-op renderer).");
+		}
 		bgfx::setDebug(m_debug);
 		imguiCreate(15.0f);
 
