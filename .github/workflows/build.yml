@@ -41,16 +41,23 @@ jobs:
       - name: Build
         run: cmake --build build --target restir_gi --parallel "$(nproc)"
 
-      # A few frames of the Cornell box under Xvfb, through OpenGL on
-      # llvmpipe, saved by the example's own --screenshot option. Catches
-      # shaders that compile but fail to link or validate at run time. --gl:
-      # with Vulkan present, bgfx may pick Direct3D through DXVK, whose shaders
-      # a Linux build does not have.
+      # A few frames of the Cornell box under Xvfb, saved by the example's own
+      # --screenshot option, through Vulkan or OpenGL on Mesa's software
+      # drivers, whichever the runner has. Catches shaders that compile but
+      # fail to link or validate at run time. The renderer is named because,
+      # left to choose, bgfx may pick Direct3D through DXVK, whose shaders a
+      # Linux build does not have.
       - name: Render a frame
         working-directory: build
         run: |
-          xvfb-run -a -s "-screen 0 1280x720x24" \
-            timeout 300 ./restir_gi --gl --no-ui --screenshot smoke --screenshot-frame 30
+          for renderer in vk gl; do
+            echo "Trying --$renderer"
+            if xvfb-run -a -s "-screen 0 1280x720x24" \
+              timeout 300 ./restir_gi --$renderer --no-ui --screenshot smoke --screenshot-frame 30 \
+              && [ -f smoke.png ]; then
+              break
+            fi
+          done
           test -f smoke.png
 
       - name: Check the frame is not blank

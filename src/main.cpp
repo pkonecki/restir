@@ -156,6 +156,9 @@ public:
 		init.callback          = &m_capture;
 		bgfx::init(init);
 
+		// bgfx falls back to another renderer when the requested one fails,
+		// which matters for the shaders found: say which one runs.
+		std::fprintf(stderr, "Renderer: %s\n", bgfx::getRendererName(bgfx::getRendererType()));
 		bgfx::setDebug(m_debug);
 		imguiCreate(15.0f);
 
