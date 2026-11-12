@@ -42,7 +42,7 @@ uniform vec4 u_lightPosition;
 uniform vec4 u_lightColor;
 uniform vec4 u_frameInfo;  // x: frame index, y: history valid, z: origin bottom-left, w: multiple bounces
 uniform vec4 u_screenInfo; // xy: GI target size, zw: GI texel size
-uniform vec4 u_sceneInfo;  // x: scene scale (see main.cpp)
+uniform vec4 u_sceneInfo;  // x: scene scale (see renderer.cpp)
 uniform vec4 u_restirOptions; // x: initial candidates, y: temporal taps, z: spatial taps, w: trace steps
 
 #define SHADOW_SAMPLER_STAGE 7
@@ -54,7 +54,7 @@ uniform vec4 u_restirOptions; // x: initial candidates, y: temporal taps, z: spa
 #define GRID_ENTRY_STAGE    13
 #include "hashgrid.sh"
 
-// Sample counts, set from the settings window (see main.cpp).
+// Sample counts, set from the settings window (see settings.h).
 #define kInitialCandidates int(u_restirOptions.x)
 #define kTemporalTaps      int(u_restirOptions.y)
 #define kSpatialTaps       int(u_restirOptions.z)

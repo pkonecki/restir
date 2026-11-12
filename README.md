@@ -256,6 +256,19 @@ the size of the light; and screen-space visibility and the clamped
 reconnection Jacobian leave a bias of a few percent. This is a real-time
 demonstration, not an unbiased multi-bounce path tracer.
 
+## Source layout
+
+- `src/main.cpp`: the application: window, keyboard shortcuts, the list of
+  models, and the glue between the parts below.
+- `src/scene.cpp`: the glTF loader (geometry, materials, texture decoding)
+  and the framing of a scene (bounds, default light position).
+- `src/renderer.cpp`: every GPU resource and pass, from the shadow map to the
+  composite. `render` submits one frame.
+- `src/camera.cpp`: the fly camera.
+- `src/ui.cpp`: the settings window and the timings it shows.
+- `src/settings.h`: the settings the window edits and the renderer reads.
+- `shaders/`: the bgfx shaders, described in the sections above.
+
 ## Visual Studio Code
 
 Install the Microsoft C/C++ extension. Use **Ctrl+Shift+B** to configure and

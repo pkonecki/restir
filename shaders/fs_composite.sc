@@ -17,7 +17,7 @@ uniform vec4 u_lightPosition;
 uniform vec4 u_lightColor;
 uniform vec4 u_cameraPosition;
 uniform vec4 u_screenInfo; // xy: GI target size, zw: GI texel size
-uniform vec4 u_sceneInfo;  // x: scene scale (see main.cpp)
+uniform vec4 u_sceneInfo;  // x: scene scale (see renderer.cpp)
 
 #define SHADOW_SAMPLER_STAGE 4
 #include "shadow.sh"

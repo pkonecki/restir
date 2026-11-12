@@ -131,6 +131,15 @@ file(GLOB RESTIR_SHADER_SOURCES CONFIGURE_DEPENDS
 
 add_executable(restir_gi
 	src/main.cpp
+	src/camera.cpp
+	src/camera.h
+	src/renderer.cpp
+	src/renderer.h
+	src/scene.cpp
+	src/scene.h
+	src/settings.h
+	src/ui.cpp
+	src/ui.h
 	${RESTIR_SHADER_SOURCES}
 	${BGFX_RUNTIME_SHADERS}
 )
