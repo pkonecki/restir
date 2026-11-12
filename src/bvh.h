@@ -9,9 +9,11 @@
 //   nodes      2 vec4 each: (min.xyz, first), (max.xyz, count)
 //              count > 0: a leaf with triangles [first, first + count)
 //              count = 0: children at nodes first and first + 1
-//   triangles  4 vec4 each: (v0.xyz, material), (v1.xyz, 0), (v2.xyz, 0),
-//              (diffuse albedo.rgb, 0), in BVH order
-//   materials  1 vec4 each: (emission.rgb, 0)
+//   triangles  4 vec4 each: (v0.xyz, material), (v1.xyz, emission.r),
+//              (v2.xyz, emission.g), (diffuse albedo.rgb, emission.b), in BVH
+//              order; albedo and emission come from the material's textures
+//              over the triangle (its UV centre, at the mip level that
+//              matches its size in the texture)
 //
 // Indices are stored as float values (exact below 2^24), not as bits, so no
 // GPU can flush them as denormals.
@@ -37,7 +39,6 @@ struct SceneBvh
 	uint32_t m_nodeCount = 0;
 	uint32_t m_triangleCount = 0;
 	uint32_t m_triangleOffset = 0; // in vec4s
-	uint32_t m_materialOffset = 0; // in vec4s
 	uint32_t m_depth = 0;          // of the deepest leaf, root = 1
 };
 

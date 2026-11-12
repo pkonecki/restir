@@ -86,7 +86,7 @@ constexpr const char* kDirectLightingNames[] =
 };
 static_assert(BX_COUNTOF(kDirectLightingNames) == size_t(DirectLighting::Count));
 
-// What the window shows. The first four are lighting, tone mapped like the
+// What the window shows. The first five are lighting, tone mapped like the
 // final image; the others are data, shown as display colours. Keep in sync
 // with shaders/fs_debug.sc.
 enum class DebugView : int
@@ -95,6 +95,7 @@ enum class DebugView : int
 	DirectLight,
 	IndirectLight,
 	Irradiance,
+	IndirectSpecular,
 	Albedo,
 	Normals,
 	RoughnessMetallic,
@@ -114,6 +115,7 @@ constexpr const char* kDebugViewNames[] =
 	"Direct light only",
 	"Indirect light only",
 	"GI irradiance",
+	"Indirect specular only",
 	"Base colour",
 	"Normals",
 	"Roughness (R), metallic (G)",
@@ -133,6 +135,7 @@ constexpr const char* kDebugViewHelp[] =
 	"The point light's direct lighting (PBR, shadowed) and the\nmaterials' emission, without GI.",
 	"The ReSTIR GI result alone, times the diffuse albedo.",
 	"The denoised GI before the albedo is multiplied in (demodulated),\nat GI resolution, upsampled.",
+	"Glossy reflections alone (fs_specular.sc): one GGX ray per GI pixel,\naccumulated over time, times the specular albedo.",
 	"The G-buffer's base colour.",
 	"The normals the direct light is shaded with (normal maps\nincluded), as colours. The GI passes use the surface's own normal.",
 	"The G-buffer's roughness in red and metallic in green.",
@@ -188,6 +191,7 @@ struct Settings
 	bool vsync = true;
 	bool hideWindowInScreenshots = true;
 	bool taa = true; // temporal anti-aliasing
+	bool specularGi = true; // glossy reflections
 	bool emissiveLighting = true; // emissive surfaces on screen light the scene through GI
 	int rayMode = int(RayMode::Hybrid);
 	int directLighting = int(DirectLighting::ReStirDi);

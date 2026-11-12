@@ -11,7 +11,7 @@
 
 BUFFER_RO(b_scene, vec4, BVH_STAGE);
 
-uniform vec4 u_bvhInfo; // x: first triangle (in vec4s), y: first material, z: node count (0: no BVH), w: ray mode
+uniform vec4 u_bvhInfo; // x: first triangle (in vec4s), z: node count (0: no BVH), w: ray mode
 
 // Keep in sync with RayMode in settings.h.
 #define RAY_MODE_SCREEN 0 // depth buffer only
@@ -188,8 +188,8 @@ vec3 bvhTriangleAlbedo(int _triangle)
 
 vec3 bvhTriangleEmission(int _triangle)
 {
-	int material = int(b_scene[int(u_bvhInfo.x) + _triangle * 4].w);
-	return b_scene[int(u_bvhInfo.y) + material].rgb;
+	int base = int(u_bvhInfo.x) + _triangle * 4;
+	return vec3(b_scene[base + 1].w, b_scene[base + 2].w, b_scene[base + 3].w);
 }
 
 #endif // BVH_SH_HEADER_GUARD

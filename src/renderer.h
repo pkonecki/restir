@@ -30,6 +30,7 @@ constexpr bgfx::ViewId kTaaView = 20;        // temporal anti-aliasing, before t
 constexpr bgfx::ViewId kUiView = 21;         // the settings window, drawn over everything
 constexpr bgfx::ViewId kDiTemporalView = 22; // ReSTIR DI, after the G-buffer
 constexpr bgfx::ViewId kDiSpatialView = 23;
+constexpr bgfx::ViewId kSpecularView = 24;   // glossy reflections, after the GI passes
 
 // GPU timings in the performance section: the views of each group of passes.
 struct PassGroup
@@ -47,6 +48,7 @@ constexpr PassGroup kPassGroups[] =
 	{ "Hash grid",       kGridClearView,   kGridInsertView },
 	{ "ReSTIR temporal", kTemporalView,    kTemporalView },
 	{ "ReSTIR spatial",  kSpatialView,     kSpatialView },
+	{ "Specular GI",     kSpecularView,    kSpecularView },
 	{ "Denoiser",        kDenoiseViewBase, kDenoiseViewBase + 5 },
 	{ "Composite",       kCompositeView,   kCompositeView },
 	{ "TAA",             kTaaView,         kTaaView },
@@ -145,6 +147,11 @@ private:
 	uint8_t m_diRead = 0;
 	bool m_diValid = false;
 	bgfx::TextureHandle m_blackTexture = BGFX_INVALID_HANDLE;
+
+	// Indirect specular (fs_specular.sc), per frame parity.
+	bgfx::TextureHandle m_specularTextures[2] = { BGFX_INVALID_HANDLE, BGFX_INVALID_HANDLE };
+	bgfx::FrameBufferHandle m_specularFrameBuffers[2] = { BGFX_INVALID_HANDLE, BGFX_INVALID_HANDLE };
+	uint8_t m_specularRead = 0;
 	std::vector<bgfx::TextureHandle> m_modelTextures;
 	std::vector<SceneMaterial> m_materials;
 	std::vector<SceneDraw> m_draws;
@@ -231,6 +238,7 @@ private:
 	bgfx::ProgramHandle m_taaProgram = BGFX_INVALID_HANDLE;
 	bgfx::ProgramHandle m_diTemporalProgram = BGFX_INVALID_HANDLE;
 	bgfx::ProgramHandle m_diSpatialProgram = BGFX_INVALID_HANDLE;
+	bgfx::ProgramHandle m_specularProgram = BGFX_INVALID_HANDLE;
 
 	// Uniforms and samplers.
 	bgfx::UniformHandle m_lightPosition = BGFX_INVALID_HANDLE;
@@ -291,4 +299,8 @@ private:
 	bgfx::UniformHandle m_surfaceLightSampler = BGFX_INVALID_HANDLE;
 	bgfx::UniformHandle m_diDiffuseSampler = BGFX_INVALID_HANDLE;
 	bgfx::UniformHandle m_diSpecularSampler = BGFX_INVALID_HANDLE;
+	bgfx::UniformHandle m_specularSampler = BGFX_INVALID_HANDLE;
+	bgfx::UniformHandle m_specularHistorySampler = BGFX_INVALID_HANDLE;
+	bgfx::UniformHandle m_previousHdrSampler = BGFX_INVALID_HANDLE;
+	bgfx::UniformHandle m_compositeSpecularUniform = BGFX_INVALID_HANDLE;
 };

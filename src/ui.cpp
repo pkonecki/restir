@@ -230,6 +230,8 @@ SettingsWindowOutput drawSettingsWindow(const SettingsWindowInput& _input, Setti
 		ImGui::SameLine();
 		ImGui::Checkbox("TAA", &_settings.taa);
 		ImGui::SetItemTooltip("Temporal anti-aliasing: each frame is rendered with a different\nsub-pixel offset, and the frames are blended over time.");
+		ImGui::Checkbox("Specular GI", &_settings.specularGi);
+		ImGui::SetItemTooltip("Glossy reflections: one GGX ray per GI pixel, traced like the GI\nrays and shaded from last frame's image where it hits a visible\nsurface, accumulated over a few frames.");
 		ImGui::Checkbox("Emissive lighting (E)", &_settings.emissiveLighting);
 		ImGui::SetItemTooltip("Emissive surfaces light the scene.");
 		ImGui::Combo("Direct lighting", &_settings.directLighting, kDirectLightingNames, int(DirectLighting::Count));

@@ -35,16 +35,16 @@ uniform vec4 u_debugView; // x: view (DebugView in settings.h), y: largest M, z:
 
 // Keep in sync with DebugView in settings.h (the composite handles the
 // lighting views before these).
-#define VIEW_ALBEDO     4
-#define VIEW_NORMALS    5
-#define VIEW_MATERIAL   6
-#define VIEW_EMISSION   7
-#define VIEW_OCCLUSION  8
-#define VIEW_M          9
-#define VIEW_W          10
-#define VIEW_HISTORY    11
-#define VIEW_GRID       12
-#define VIEW_SOURCE     13
+#define VIEW_ALBEDO     5
+#define VIEW_NORMALS    6
+#define VIEW_MATERIAL   7
+#define VIEW_EMISSION   8
+#define VIEW_OCCLUSION  9
+#define VIEW_M          10
+#define VIEW_W          11
+#define VIEW_HISTORY    12
+#define VIEW_GRID       13
+#define VIEW_SOURCE     14
 
 #define kSkyDepth 0.99999
 #define kMaxAccumulation 16.0 // see fs_restir_spatial.sc

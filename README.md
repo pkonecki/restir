@@ -317,6 +317,28 @@ group) averages the log luminance of 64x64 samples of it, and the tone
 mapping pass (`shaders/fs_tonemap.sc`, operators in `shaders/tonemap.sh`)
 applies the exposure and the tone mapper on the way to the window.
 
+### Glossy reflections: specular GI
+
+The ReSTIR passes resample for the diffuse part of the light. Glossy
+reflections get a pass of their own at GI resolution
+(`shaders/fs_specular.sc`): one ray per pixel sampled from the GGX
+distribution of visible normals (Heitz 2018), traced like the GI rays
+(depth buffer, then BVH, then sky). Where it hits a visible surface, it
+takes last frame's HDR image there, so reflections show everything,
+reflections included, one frame late; off screen it shades the hit
+triangle as GI does. The estimate is divided by the split-sum specular
+albedo (Karis's analytic fit) and accumulated over 4 frames on a mirror to
+32 on a rough surface, and the composite multiplies the albedo back in.
+Metals, which reflect no diffuse light, get their indirect light this way
+(see the Khronos DamagedHelmet sample). **Specular GI** (Rendering section)
+turns it off, and **Indirect specular only** shows it alone.
+
+Limits: one sample per GI pixel without a spatial filter, so rough
+surfaces stay somewhat noisy (TAA smooths it); reflections of off-screen
+geometry have no texture detail beyond each triangle's colour; and the
+reflected image is last frame's, as seen from the camera rather than from
+the reflection.
+
 ### Direct light from many lights: ReSTIR DI
 
 The main point light keeps its shadow map. Everything else that emits, the
@@ -404,14 +426,15 @@ by default they are traced again through a bounding volume hierarchy of every
 triangle in the scene. It is built on the CPU when a model loads (binned SAH,
 up to four triangles per leaf; Sponza's 262,000 triangles take under 0.2 s
 and 32 MB) and uploaded as one GPU buffer that also holds each triangle's
-average diffuse albedo (material factors, vertex colours and the average of
-its base colour texture) and each material's emission (`src/bvh.cpp`;
-traversal in `shaders/bvh.sh`).
+diffuse albedo and emission (material factors and vertex colours, times its
+textures at the centre of its texture coordinates, read from the mip level
+that matches the triangle's size in the texture) (`src/bvh.cpp`; traversal
+in `shaders/bvh.sh`).
 
 A reservoir stores the triangle its sample lies on, as well as the side its
 ray came from. A sample point that is a visible surface is shaded from the
 G-buffer as before; one that is off screen or hidden is shaded from its
-triangle: its average albedo, its plane normal, the point light through the
+triangle: its albedo, its plane normal, the point light through the
 cube shadow map (which covers the whole scene), and its emission. Such
 samples therefore survive camera motion that hides them, where samples found
 in the depth buffer are dropped. The **Rays** setting (R) chooses:
@@ -429,8 +452,8 @@ Mesa's software rasterizer, the hybrid mode made the temporal pass about 2.5
 times as expensive in Sponza, and BVH only also doubled the spatial pass;
 GPUs will differ.
 
-Known limits: off-screen sample points have no texture detail (one average
-albedo per triangle), ignore alpha masks (foliage is opaque to BVH rays),
+Known limits: off-screen sample points have no texture detail within a
+triangle (one colour per triangle), ignore alpha masks (foliage is opaque to BVH rays),
 and get no bounce light of their own, since that comes from the on-screen
 history; so the extra bounces still come from what is on screen. Samples
 found in the depth buffer are dropped when they leave the screen, as the
@@ -448,7 +471,8 @@ demonstration, not an unbiased multi-bounce path tracer.
   and the framing of a scene (bounds, default light position).
 - `src/renderer.cpp`: every GPU resource and pass, from the shadow map to the
   composite. `render` submits one frame.
-- `src/bvh.cpp`: the BVH for the rays the depth buffer cannot answer.
+- `src/bvh.cpp`: the BVH for the rays the depth buffer cannot answer, with
+  each triangle's colour and emission sampled from its textures.
 - `src/lights.cpp`: the light list ReSTIR DI samples.
 - `src/camera.cpp`: the fly camera.
 - `src/ui.cpp`: the settings window and the timings it shows.

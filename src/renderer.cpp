@@ -101,7 +101,7 @@ void Renderer::init(const Settings& _settings)
 		kShadowViewBase + 0, kShadowViewBase + 1, kShadowViewBase + 2,
 		kShadowViewBase + 3, kShadowViewBase + 4, kShadowViewBase + 5,
 		kGeometryView, kDiTemporalView, kDiSpatialView,
-		kGridClearView, kGridInsertView, kTemporalView, kSpatialView,
+		kGridClearView, kGridInsertView, kTemporalView, kSpatialView, kSpecularView,
 		kDenoiseViewBase + 0, kDenoiseViewBase + 1, kDenoiseViewBase + 2,
 		kDenoiseViewBase + 3, kDenoiseViewBase + 4, kDenoiseViewBase + 5,
 		kCompositeView, kTaaView, kExposureView, kTonemapView, kUiView,
@@ -167,6 +167,7 @@ void Renderer::init(const Settings& _settings)
 	m_taaProgram = loadProgram("vs_fullscreen", "fs_taa");
 	m_diTemporalProgram = loadProgram("vs_fullscreen", "fs_di_temporal");
 	m_diSpatialProgram = loadProgram("vs_fullscreen", "fs_di_spatial");
+	m_specularProgram = loadProgram("vs_fullscreen", "fs_specular");
 	m_debugProgram = loadProgram("vs_fullscreen", "fs_debug");
 	m_lightPosition = bgfx::createUniform("u_lightPosition", bgfx::UniformType::Vec4);
 	m_lightColor = bgfx::createUniform("u_lightColor", bgfx::UniformType::Vec4);
@@ -218,6 +219,10 @@ void Renderer::init(const Settings& _settings)
 	m_surfaceLightSampler = bgfx::createUniform("s_surfaceLight", bgfx::UniformType::Sampler);
 	m_diDiffuseSampler = bgfx::createUniform("s_diDiffuse", bgfx::UniformType::Sampler);
 	m_diSpecularSampler = bgfx::createUniform("s_diSpecular", bgfx::UniformType::Sampler);
+	m_specularSampler = bgfx::createUniform("s_specular", bgfx::UniformType::Sampler);
+	m_specularHistorySampler = bgfx::createUniform("s_specularHistory", bgfx::UniformType::Sampler);
+	m_previousHdrSampler = bgfx::createUniform("s_previousHdr", bgfx::UniformType::Sampler);
+	m_compositeSpecularUniform = bgfx::createUniform("u_compositeSpecular", bgfx::UniformType::Vec4);
 	m_debugViewUniform = bgfx::createUniform("u_debugView", bgfx::UniformType::Vec4);
 	m_emissiveSampler = bgfx::createUniform("s_emissive", bgfx::UniformType::Sampler);
 	m_shadingNormalSampler = bgfx::createUniform("s_shadingNormal", bgfx::UniformType::Sampler);
@@ -289,7 +294,7 @@ void Renderer::shutdown()
 		m_geometryProgram, m_temporalProgram, m_spatialProgram, m_compositeProgram, m_shadowProgram,
 		m_varianceProgram, m_atrousProgram, m_gridClearProgram, m_gridInsertProgram,
 		m_exposureProgram, m_tonemapProgram, m_debugProgram, m_taaProgram,
-		m_diTemporalProgram, m_diSpatialProgram,
+		m_diTemporalProgram, m_diSpatialProgram, m_specularProgram,
 	};
 	for (bgfx::ProgramHandle& program : programs)
 	{
@@ -318,6 +323,7 @@ void Renderer::shutdown()
 		m_diInfoUniform, m_diPreviousUniform, m_screenSizeUniform, m_lightingInfoUniform,
 		m_previousSampleSampler, m_previousReceiverSampler, m_previousNormalSampler,
 		m_surfaceLightSampler, m_diDiffuseSampler, m_diSpecularSampler,
+		m_specularSampler, m_specularHistorySampler, m_previousHdrSampler, m_compositeSpecularUniform,
 		m_hdrSampler, m_exposureAdaptUniform, m_tonemapUniform,
 		m_debugViewUniform, m_compositeOptionsUniform,
 	};
@@ -368,7 +374,7 @@ void Renderer::setScene(const SceneMesh& _mesh, const SceneInfo& _info)
 		, BGFX_BUFFER_COMPUTE_READ
 		);
 	m_bvhInfo[0] = float(bvh.m_triangleOffset);
-	m_bvhInfo[1] = float(bvh.m_materialOffset);
+	m_bvhInfo[1] = 0.0f;
 	m_bvhInfo[2] = bgfx::isValid(m_bvhBuffer) ? float(bvh.m_nodeCount) : 0.0f;
 	m_bvhStats = { bvh.m_triangleCount, bvh.m_nodeCount, bvh.m_depth, float(buildMs) };
 	m_emitters = bvh.m_emitters;
@@ -788,6 +794,28 @@ void Renderer::render(const FrameInput& _input, const Settings& _settings)
 	bgfx::setState(BGFX_STATE_WRITE_RGB | BGFX_STATE_WRITE_A);
 	bgfx::submit(kSpatialView, m_spatialProgram);
 
+	// Indirect specular: one GGX ray per GI pixel, accumulated over time.
+	const bool specularActive = _settings.specularGi;
+	if (specularActive)
+	{
+		const uint8_t specularWrite = uint8_t(1 - m_specularRead);
+		bgfx::setMarker("Specular GI");
+		bgfx::setViewName(kSpecularView, "Specular GI");
+		bgfx::setViewRect(kSpecularView, 0, 0, giWidth, giHeight);
+		bgfx::setViewFrameBuffer(kSpecularView, m_specularFrameBuffers[specularWrite]);
+		bgfx::setViewTransform(kSpecularView, nullptr, nullptr);
+		setGiPassInputs();
+		bgfx::setTexture(3, m_previousHdrSampler, m_hdrTexture);
+		bgfx::setTexture(4, m_specularHistorySampler, m_specularTextures[m_specularRead]);
+		setGrid(currentGrid);
+		bgfx::setUniform(m_gridCameraUniform, cameraPosition);
+		bgfx::setUniform(m_cameraPosition, cameraPosition);
+		setFullscreenGeometry();
+		bgfx::setState(BGFX_STATE_WRITE_RGB | BGFX_STATE_WRITE_A);
+		bgfx::submit(kSpecularView, m_specularProgram);
+		m_specularRead = specularWrite;
+	}
+
 	// Denoiser: variance estimate into filter target 0, then the a-trous
 	// iterations. The first writes the filtered history for next frame,
 	// the rest ping-pong between the two filter targets.
@@ -881,11 +909,18 @@ void Renderer::render(const FrameInput& _input, const Settings& _settings)
 		const float compositeOptions[] =
 		{
 			debugView == DebugView::Final || debugView == DebugView::DirectLight ? 1.0f : 0.0f,
-			debugView == DebugView::DirectLight ? 0.0f : 1.0f,
+			debugView == DebugView::DirectLight || debugView == DebugView::IndirectSpecular ? 0.0f : 1.0f,
 			debugView == DebugView::Irradiance ? 0.0f : 1.0f,
 			debugView == DebugView::Final || debugView == DebugView::DirectLight ? 1.0f : 0.0f,
 		};
 		bgfx::setUniform(m_compositeOptionsUniform, compositeOptions);
+		const float compositeSpecular[] =
+		{
+			specularActive && (debugView == DebugView::Final || debugView == DebugView::IndirectLight
+				|| debugView == DebugView::IndirectSpecular) ? 1.0f : 0.0f,
+			0.0f, 0.0f, 0.0f,
+		};
+		bgfx::setUniform(m_compositeSpecularUniform, compositeSpecular);
 		bgfx::setTexture(0, m_albedoSampler, m_gbufferAlbedo);
 		bgfx::setTexture(1, m_normalSampler, m_gbufferNormal);
 		bgfx::setTexture(2, m_depthSampler, m_gbufferDepth);
@@ -895,6 +930,7 @@ void Renderer::render(const FrameInput& _input, const Settings& _settings)
 		bgfx::setTexture(6, m_shadingNormalSampler, m_gbufferShadingNormal);
 		bgfx::setTexture(7, m_diDiffuseSampler, diDiffuse);
 		bgfx::setTexture(8, m_diSpecularSampler, diSpecular);
+		bgfx::setTexture(9, m_specularSampler, specularActive ? m_specularTextures[m_specularRead] : m_blackTexture);
 		bgfx::setUniform(m_shadowViewProjUniform, shadowViewProj, 6);
 		bgfx::setUniform(m_shadowInfoUniform, shadowInfo);
 		bgfx::setUniform(m_shadowOptionsUniform, shadowOptions);
@@ -1096,6 +1132,7 @@ void Renderer::destroyRenderTargets()
 		destroyIfValid(m_shadeFrameBuffers[idx]);
 		destroyIfValid(m_filteredHistoryFrameBuffers[idx]);
 		destroyIfValid(m_filterFrameBuffers[idx]);
+		destroyIfValid(m_specularFrameBuffers[idx]);
 	}
 }
 
@@ -1241,6 +1278,10 @@ void Renderer::createRenderTargets(uint32_t _width, uint32_t _height, const Sett
 		m_filteredHistoryFrameBuffers[idx] = bgfx::createFrameBuffer(1, &m_filteredHistory[idx], true);
 		m_filterTextures[idx] = createTarget(giWidth, giHeight, bgfx::TextureFormat::RGBA16F);
 		m_filterFrameBuffers[idx] = bgfx::createFrameBuffer(1, &m_filterTextures[idx], true);
+
+		// Indirect specular, accumulated per frame parity.
+		m_specularTextures[idx] = createTarget(giWidth, giHeight, bgfx::TextureFormat::RGBA16F);
+		m_specularFrameBuffers[idx] = bgfx::createFrameBuffer(1, &m_specularTextures[idx], true);
 	}
 
 	if (!bgfx::isValid(m_gbuffer) || !bgfx::isValid(m_hdrFrameBuffer)

@@ -162,5 +162,11 @@ void main()
 	history = clipToBox(history, mean, deviation * kClipGamma);
 
 	vec3 blended = mix(fromYCoCg(history), compress(current.rgb), kBlend);
-	gl_FragColor = vec4(decompress(blended), current.a);
+	vec3 result = decompress(blended);
+	// A NaN anywhere upstream would otherwise stay in the history for good.
+	if (any(notEqual(result, result)))
+	{
+		result = any(notEqual(current.rgb, current.rgb)) ? vec3_splat(0.0) : current.rgb;
+	}
+	gl_FragColor = vec4(result, current.a);
 }

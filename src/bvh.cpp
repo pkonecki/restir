@@ -200,16 +200,43 @@ private:
 	const std::vector<bx::Vec3>& m_centroids;
 };
 
-// The average colour of an image: its 1x1 mip, the last texel of the chain.
-// Colour images are decoded from the same 2.2 gamma the shaders use.
-std::array<float, 4> averageColor(const SceneMesh& _mesh, int32_t _image, bool _gamma)
+// A texture's colour over a triangle: the texel at the centre of its
+// texture coordinates, from the mip level whose texels are about the size of
+// the triangle in the texture, so a large triangle gets the average of the
+// area it covers. Colour images are decoded from the same 2.2 gamma the
+// shaders use. White without a texture.
+std::array<float, 4> triangleTexture(const SceneMesh& _mesh, int32_t _image, const float* _uv0, const float* _uv1, const float* _uv2, bool _gamma)
 {
-	if (_image < 0 || std::size_t(_image) >= _mesh.m_images.size() || _mesh.m_images[_image].m_data.size() < 4)
+	if (_image < 0 || std::size_t(_image) >= _mesh.m_images.size() || _mesh.m_images[_image].m_data.empty())
 	{
 		return { 1.0f, 1.0f, 1.0f, 1.0f };
 	}
 
-	const uint8_t* texel = _mesh.m_images[_image].m_data.data() + _mesh.m_images[_image].m_data.size() - 4;
+	const SceneImage& image = _mesh.m_images[_image];
+	const float uvArea = 0.5f * std::abs((_uv1[0] - _uv0[0]) * (_uv2[1] - _uv0[1]) - (_uv2[0] - _uv0[0]) * (_uv1[1] - _uv0[1]));
+	const float texels = uvArea * float(image.m_width) * float(image.m_height);
+	const int wantedLevel = texels > 1.0f ? int(0.5f * std::log2(texels)) : 0;
+
+	// Walk the chain (each level halves, down to 1x1) to the wanted level.
+	uint32_t width = image.m_width;
+	uint32_t height = image.m_height;
+	std::size_t offset = 0;
+	for (int level = 0; level < wantedLevel && (width > 1 || height > 1); ++level)
+	{
+		offset += std::size_t(width) * height * 4;
+		width = std::max(width / 2, 1u);
+		height = std::max(height / 2, 1u);
+	}
+
+	// The centre, wrapped (glTF textures repeat by default).
+	float u = (_uv0[0] + _uv1[0] + _uv2[0]) / 3.0f;
+	float v = (_uv0[1] + _uv1[1] + _uv2[1]) / 3.0f;
+	u -= std::floor(u);
+	v -= std::floor(v);
+	const uint32_t x = std::min(uint32_t(u * float(width)), width - 1);
+	const uint32_t y = std::min(uint32_t(v * float(height)), height - 1);
+	const uint8_t* texel = image.m_data.data() + offset + (std::size_t(y) * width + x) * 4;
+
 	std::array<float, 4> color;
 	for (int channel = 0; channel < 4; ++channel)
 	{
@@ -259,35 +286,14 @@ SceneBvh buildBvh(const SceneMesh& _mesh)
 		}
 	}
 
-	// Per material: the average base colour and metallic of its textures, and
-	// its emission (factor times the average emissive texture).
-	const std::size_t materialCount = _mesh.m_materials.size();
-	std::vector<std::array<float, 4>> materialBase(materialCount);
-	std::vector<float> materialMetallic(materialCount);
-	std::vector<std::array<float, 3>> materialEmission(materialCount);
-	for (std::size_t idx = 0; idx < materialCount; ++idx)
-	{
-		const SceneMaterial& material = _mesh.m_materials[idx];
-		materialBase[idx] = averageColor(_mesh, material.m_baseColorImage, true);
-		materialMetallic[idx] = material.m_metallicTextureMissing
-			? 0.0f
-			: averageColor(_mesh, material.m_metallicRoughnessImage, false)[2];
-		const std::array<float, 4> emissive = averageColor(_mesh, material.m_emissiveImage, true);
-		for (int channel = 0; channel < 3; ++channel)
-		{
-			materialEmission[idx][channel] = material.m_emissive[channel] * emissive[channel];
-		}
-	}
-
 	Builder builder(triangleBounds, centroids);
 	builder.build();
 
 	bvh.m_nodeCount = uint32_t(builder.m_nodes.size());
 	bvh.m_triangleCount = uint32_t(triangleCount);
 	bvh.m_triangleOffset = 2 * bvh.m_nodeCount;
-	bvh.m_materialOffset = bvh.m_triangleOffset + 4 * bvh.m_triangleCount;
 	bvh.m_depth = builder.m_depth;
-	bvh.m_data.resize(std::size_t(bvh.m_materialOffset + materialCount) * 4, 0.0f);
+	bvh.m_data.resize(std::size_t(bvh.m_triangleOffset + 4 * bvh.m_triangleCount) * 4, 0.0f);
 
 	float* out = bvh.m_data.data();
 	for (const BuildNode& node : builder.m_nodes)
@@ -305,55 +311,59 @@ SceneBvh buildBvh(const SceneMesh& _mesh)
 	for (const uint32_t triangle : builder.m_order)
 	{
 		const uint32_t material = triangleMaterial[triangle];
-		const std::array<float, 3>& emission = materialEmission[material];
-		if (emission[0] > 0.0f || emission[1] > 0.0f || emission[2] > 0.0f)
-		{
-			EmissiveTriangle emitter;
-			emitter.m_triangle = bvhIndex;
-			for (int corner = 0; corner < 3; ++corner)
-			{
-				const bx::Vec3 position = vertex(_mesh.m_indices[triangle * 3 + corner]);
-				emitter.m_vertices[corner][0] = position.x;
-				emitter.m_vertices[corner][1] = position.y;
-				emitter.m_vertices[corner][2] = position.z;
-			}
-			std::memcpy(emitter.m_emission, emission.data(), sizeof(emitter.m_emission));
-			bvh.m_emitters.push_back(emitter);
-		}
-		++bvhIndex;
+		const SceneMaterial& source = _mesh.m_materials[material];
+		const SceneVertex* corners[3];
 		float baseColor[3] = { 0.0f, 0.0f, 0.0f };
 		float metallic = 0.0f;
 		for (int corner = 0; corner < 3; ++corner)
 		{
-			const SceneVertex& source = _mesh.m_vertices[_mesh.m_indices[triangle * 3 + corner]];
+			corners[corner] = &_mesh.m_vertices[_mesh.m_indices[triangle * 3 + corner]];
 			const bx::Vec3 position = vertex(_mesh.m_indices[triangle * 3 + corner]);
 			out[corner * 4 + 0] = position.x;
 			out[corner * 4 + 1] = position.y;
 			out[corner * 4 + 2] = position.z;
 			for (int channel = 0; channel < 3; ++channel)
 			{
-				baseColor[channel] += source.m_color[channel] / 3.0f;
+				baseColor[channel] += corners[corner]->m_color[channel] / 3.0f;
 			}
-			metallic += source.m_material[1] / 3.0f;
+			metallic += corners[corner]->m_material[1] / 3.0f;
 		}
 		out[3] = float(material);
 
 		// The diffuse albedo, as diffuseAlbedo() in shaders/restir.sh derives
-		// it from the G-buffer.
-		metallic *= materialMetallic[material];
+		// it from the G-buffer, and the emission, from the textures over this
+		// triangle.
+		const auto texture = [&](int32_t _image, bool _gamma)
+		{
+			return triangleTexture(_mesh, _image
+				, corners[0]->m_texcoord, corners[1]->m_texcoord, corners[2]->m_texcoord, _gamma);
+		};
+		const std::array<float, 4> base = texture(source.m_baseColorImage, true);
+		metallic *= source.m_metallicTextureMissing ? 0.0f : texture(source.m_metallicRoughnessImage, false)[2];
+		const std::array<float, 4> emissive = texture(source.m_emissiveImage, true);
+		float emission[3];
 		for (int channel = 0; channel < 3; ++channel)
 		{
-			out[12 + channel] = baseColor[channel] * materialBase[material][channel] * (1.0f - metallic);
+			out[12 + channel] = baseColor[channel] * base[channel] * (1.0f - metallic);
+			emission[channel] = source.m_emissive[channel] * emissive[channel];
 		}
-		out += 16;
-	}
+		out[7] = emission[0];
+		out[11] = emission[1];
+		out[15] = emission[2];
 
-	for (std::size_t idx = 0; idx < materialCount; ++idx)
-	{
-		out[0] = materialEmission[idx][0];
-		out[1] = materialEmission[idx][1];
-		out[2] = materialEmission[idx][2];
-		out += 4;
+		if (emission[0] > 0.0f || emission[1] > 0.0f || emission[2] > 0.0f)
+		{
+			EmissiveTriangle emitter;
+			emitter.m_triangle = bvhIndex;
+			for (int corner = 0; corner < 3; ++corner)
+			{
+				std::memcpy(emitter.m_vertices[corner], corners[corner]->m_position, sizeof(emitter.m_vertices[corner]));
+			}
+			std::memcpy(emitter.m_emission, emission, sizeof(emitter.m_emission));
+			bvh.m_emitters.push_back(emitter);
+		}
+		++bvhIndex;
+		out += 16;
 	}
 
 	return bvh;
