@@ -83,7 +83,8 @@ that cannot be read is skipped with a warning; if it was a metallic-roughness
 texture, its material is treated as non-metallic, since models with one
 usually leave the metallic factor at its default of 1.
 
-A few more command line options help with repeatable comparisons:
+A few more command line options help with repeatable comparisons (and
+`--measure`, under **Reference** below):
 
 ```sh
 restir_gi --camera 0,1,4.5,0,0.1 --no-ui --screenshot out --screenshot-frame 120
@@ -153,6 +154,17 @@ sections:
   exposure in stops, and auto exposure, which brings the log-average
   luminance of the image to middle grey, easing in at the chosen speed (the
   exposure slider then compensates on top of it).
+- **Reference** (collapsed): **Accumulate reference** averages frames of
+  the current view with every biased shortcut off (no reuse in GI or DI, no
+  denoiser, no TAA, no clamps; the camera keeps jittering, so the result is
+  anti-aliased), which converges to the unbiased image of the same rays.
+  Moving the camera or the light starts it again. Once it is stopped, the
+  window shows the live image's relative MSE and brightness bias against it
+  (measured every 30 frames by `shaders/cs_error.sc` and read back), and the
+  display can switch to the reference or to a heat map of the per-pixel
+  error (green none, blue darker, red brighter). `--measure N` does the same
+  from the command line: it accumulates N frames, lets the live settings
+  settle, prints the two numbers and exits.
 - **Performance**: frames per second with a frame time plot, and the GPU time
   of each group of passes (shadow map, G-buffer, hash grid, ReSTIR temporal
   and spatial, denoiser, composite, tone mapping), measured with bgfx's per-view profiler.

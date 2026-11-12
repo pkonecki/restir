@@ -31,6 +31,8 @@ constexpr bgfx::ViewId kUiView = 21;         // the settings window, drawn over 
 constexpr bgfx::ViewId kDiTemporalView = 22; // ReSTIR DI, after the G-buffer
 constexpr bgfx::ViewId kDiSpatialView = 23;
 constexpr bgfx::ViewId kSpecularView = 24;   // glossy reflections, after the GI passes
+constexpr bgfx::ViewId kReferenceView = 25;  // reference accumulation, after TAA
+constexpr bgfx::ViewId kErrorView = 26;      // error against the reference (compute)
 
 // GPU timings in the performance section: the views of each group of passes.
 struct PassGroup
@@ -52,6 +54,7 @@ constexpr PassGroup kPassGroups[] =
 	{ "Denoiser",        kDenoiseViewBase, kDenoiseViewBase + 5 },
 	{ "Composite",       kCompositeView,   kCompositeView },
 	{ "TAA",             kTaaView,         kTaaView },
+	{ "Reference",       kReferenceView,   kErrorView },
 	{ "Tone mapping",    kExposureView,    kTonemapView },
 };
 constexpr int kPassGroupCount = int(BX_COUNTOF(kPassGroups));
@@ -95,6 +98,24 @@ public:
 		float m_buildMs = 0.0f;
 	};
 	const BvhStats& bvhStats() const { return m_bvhStats; }
+
+	// The reference: the unbiased image of the current view, accumulated
+	// with every biased shortcut off, and the error of the live image
+	// against it.
+	struct ReferenceMetrics
+	{
+		bool m_valid = false;
+		float m_relativeMse = 0.0f; // mean of (L - L_ref)^2 / (L_ref^2 + 0.01)
+		float m_bias = 0.0f;        // mean luminance over the reference's, minus 1
+	};
+	void setReferenceAccumulation(bool _accumulate);
+	void clearReference();
+	bool referenceAccumulating() const { return m_referenceAccumulating; }
+	uint32_t referenceFrames() const { return m_referenceFrames; }
+	const ReferenceMetrics& referenceMetrics() const { return m_metrics; }
+
+	// Call with what bgfx::frame returned, for the error read-back.
+	void frameSubmitted(uint32_t _frame);
 
 	// The light list ReSTIR DI samples, for the settings window.
 	uint32_t lightCount() const { return m_lightCount; }
@@ -152,6 +173,19 @@ private:
 	bgfx::TextureHandle m_specularTextures[2] = { BGFX_INVALID_HANDLE, BGFX_INVALID_HANDLE };
 	bgfx::FrameBufferHandle m_specularFrameBuffers[2] = { BGFX_INVALID_HANDLE, BGFX_INVALID_HANDLE };
 	uint8_t m_specularRead = 0;
+
+	// Reference accumulation and the error read-back.
+	bgfx::TextureHandle m_referenceTextures[2] = { BGFX_INVALID_HANDLE, BGFX_INVALID_HANDLE };
+	bgfx::FrameBufferHandle m_referenceFrameBuffers[2] = { BGFX_INVALID_HANDLE, BGFX_INVALID_HANDLE };
+	uint8_t m_referenceRead = 0;
+	uint32_t m_referenceFrames = 0;
+	bool m_referenceAccumulating = false;
+	float m_referenceViewProj[16] = {};
+	float m_referenceLight[3] = {};
+	bgfx::DynamicIndexBufferHandle m_errorBuffer = BGFX_INVALID_HANDLE;
+	uint32_t m_errorData[4] = {}; // float bits
+	uint32_t m_errorReadFrame = 0; // the frame the pending read-back is ready, 0 for none
+	ReferenceMetrics m_metrics;
 	std::vector<bgfx::TextureHandle> m_modelTextures;
 	std::vector<SceneMaterial> m_materials;
 	std::vector<SceneDraw> m_draws;
@@ -239,6 +273,8 @@ private:
 	bgfx::ProgramHandle m_diTemporalProgram = BGFX_INVALID_HANDLE;
 	bgfx::ProgramHandle m_diSpatialProgram = BGFX_INVALID_HANDLE;
 	bgfx::ProgramHandle m_specularProgram = BGFX_INVALID_HANDLE;
+	bgfx::ProgramHandle m_referenceProgram = BGFX_INVALID_HANDLE;
+	bgfx::ProgramHandle m_errorProgram = BGFX_INVALID_HANDLE;
 
 	// Uniforms and samplers.
 	bgfx::UniformHandle m_lightPosition = BGFX_INVALID_HANDLE;
@@ -303,4 +339,10 @@ private:
 	bgfx::UniformHandle m_specularHistorySampler = BGFX_INVALID_HANDLE;
 	bgfx::UniformHandle m_previousHdrSampler = BGFX_INVALID_HANDLE;
 	bgfx::UniformHandle m_compositeSpecularUniform = BGFX_INVALID_HANDLE;
+	bgfx::UniformHandle m_referenceHistorySampler = BGFX_INVALID_HANDLE;
+	bgfx::UniformHandle m_referenceSampler = BGFX_INVALID_HANDLE;
+	bgfx::UniformHandle m_displaySampler = BGFX_INVALID_HANDLE;
+	bgfx::UniformHandle m_referenceInfoUniform = BGFX_INVALID_HANDLE;
+	bgfx::UniformHandle m_errorInfoUniform = BGFX_INVALID_HANDLE;
+	bgfx::UniformHandle m_referenceViewUniform = BGFX_INVALID_HANDLE;
 };

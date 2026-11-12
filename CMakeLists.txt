@@ -110,14 +110,14 @@ restir_compile_shaders(VERTEX
 	SHADERS vs_scene vs_shadow vs_fullscreen
 	PROFILES ${RESTIR_SHADER_PROFILES})
 restir_compile_shaders(FRAGMENT
-	SHADERS fs_gbuffer fs_composite fs_shadow fs_svgf_variance fs_svgf_atrous fs_taa
+	SHADERS fs_gbuffer fs_composite fs_shadow fs_svgf_variance fs_svgf_atrous fs_taa fs_reference
 	PROFILES ${RESTIR_SHADER_PROFILES})
 # Fragment shaders that read storage buffers need the compute profiles too.
 restir_compile_shaders(FRAGMENT
 	SHADERS fs_restir_temporal fs_restir_spatial fs_tonemap fs_debug fs_di_temporal fs_di_spatial fs_specular
 	PROFILES ${RESTIR_COMPUTE_PROFILES})
 restir_compile_shaders(COMPUTE
-	SHADERS cs_grid_clear cs_grid_insert cs_exposure
+	SHADERS cs_grid_clear cs_grid_insert cs_exposure cs_error
 	PROFILES ${RESTIR_COMPUTE_PROFILES})
 
 # The runtime looks for <name>.bin, not <name>.sc.bin.

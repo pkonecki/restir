@@ -54,6 +54,9 @@ struct SettingsWindowInput
 	Renderer::BvhStats m_bvhStats;
 	uint32_t m_lightCount;
 	uint32_t m_emissiveTriangles;
+	bool m_referenceAccumulating;
+	uint32_t m_referenceFrames;
+	Renderer::ReferenceMetrics m_referenceMetrics;
 };
 
 // What the window asks the application to do.
@@ -65,6 +68,8 @@ struct SettingsWindowOutput
 	bool m_addBookmark = false;
 	std::optional<std::size_t> m_goToBookmark;
 	std::optional<std::size_t> m_removeBookmark;
+	bool m_toggleReference = false;
+	bool m_clearReference = false;
 };
 
 // Draws the window. Settings change in place; the caller reacts to what

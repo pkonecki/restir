@@ -273,6 +273,48 @@ SettingsWindowOutput drawSettingsWindow(const SettingsWindowInput& _input, Setti
 		}
 	}
 
+	if (ImGui::CollapsingHeader("Reference"))
+	{
+		if (ImGui::Button(_input.m_referenceAccumulating ? "Stop accumulating" : "Accumulate reference"))
+		{
+			output.m_toggleReference = true;
+		}
+		ImGui::SetItemTooltip("Average frames of this view with every biased shortcut off (no\nreuse, denoiser, TAA or clamps; the camera still jitters): the\nunbiased image of the same rays. Moving the camera or the light\nstarts it again. Stop it to compare the live image against it.");
+		ImGui::SameLine();
+		ImGui::BeginDisabled(_input.m_referenceFrames == 0);
+		if (ImGui::Button("Clear"))
+		{
+			output.m_clearReference = true;
+		}
+		ImGui::EndDisabled();
+		ImGui::SameLine();
+		ImGui::Text("%u frames", _input.m_referenceFrames);
+
+		ImGui::BeginDisabled(_input.m_referenceFrames == 0);
+		ImGui::RadioButton("Image", &_settings.referenceView, 0);
+		ImGui::SameLine();
+		ImGui::RadioButton("Reference", &_settings.referenceView, 1);
+		ImGui::SameLine();
+		ImGui::RadioButton("Error", &_settings.referenceView, 2);
+		ImGui::SetItemTooltip("Relative error in luminance against the reference: green none,\nblue darker and red brighter, saturating at 50%%.");
+		ImGui::EndDisabled();
+
+		const Renderer::ReferenceMetrics& metrics = _input.m_referenceMetrics;
+		if (_input.m_referenceAccumulating)
+		{
+			ImGui::TextDisabled("Accumulating; stop to compare.");
+		}
+		else if (metrics.m_valid)
+		{
+			ImGui::Text("Relative MSE %.5f   bias %+.2f%%", metrics.m_relativeMse, 100.0f * metrics.m_bias);
+			ImGui::SetItemTooltip("Of the displayed image (after TAA, before tone mapping) against\nthe reference, in luminance, over the pixels that show the scene.\nBias: mean brightness relative to the reference's.");
+		}
+		else if (_input.m_referenceFrames > 0)
+		{
+			ImGui::TextDisabled("Measuring...");
+		}
+	}
+
 	if (ImGui::CollapsingHeader("Performance", ImGuiTreeNodeFlags_DefaultOpen))
 	{
 		ImGui::Text("%.1f FPS  (%.2f ms per frame)", stats.m_cpuFrameMs > 0.0f ? 1000.0f / stats.m_cpuFrameMs : 0.0f, stats.m_cpuFrameMs);

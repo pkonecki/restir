@@ -22,6 +22,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <filesystem>
 #include <optional>
 #include <stdexcept>
@@ -30,6 +31,9 @@
 
 namespace
 {
+
+// --measure: live frames to let the history settle before measuring.
+constexpr int kMeasureSettleFrames = 120;
 
 // Camera start, in scene radii from the centre of the scene.
 constexpr float kInitialCameraDistance = 3.17f; // outside the scene, for open models like the Cornell box
@@ -97,6 +101,12 @@ public:
 			{
 				std::fprintf(stderr, "Ignoring --camera %s: expected x,y,z,yaw,pitch.\n", cameraOption);
 			}
+		}
+		// --measure N accumulates an N-frame reference, then lets the live
+		// settings settle, prints their error against it and exits.
+		if (const char* measureOption = commandLine.findOption("measure"))
+		{
+			m_measureFrames = std::max(std::atoi(measureOption), 1);
 		}
 		// --no-ui starts with the settings window hidden (F2 toggles it).
 		m_showWindow = !commandLine.hasArg("no-ui");
@@ -202,11 +212,46 @@ public:
 		}
 
 		bgfx::setMarker("Present");
-		bgfx::frame();
-		return true;
+		m_renderer.frameSubmitted(bgfx::frame());
+		return updateMeasurement();
 	}
 
 private:
+	// --measure: accumulate, settle, report, quit. False to quit.
+	bool updateMeasurement()
+	{
+		if (m_measureFrames == 0)
+		{
+			return true;
+		}
+		if (m_measureSettled == 0)
+		{
+			if (!m_renderer.referenceAccumulating() && m_renderer.referenceFrames() == 0)
+			{
+				m_renderer.setReferenceAccumulation(true);
+			}
+			else if (m_renderer.referenceFrames() >= uint32_t(m_measureFrames))
+			{
+				m_renderer.setReferenceAccumulation(false);
+				m_measureSettled = 1;
+			}
+			return true;
+		}
+
+		// The live history restarts when the shortcuts come back: give it a
+		// few seconds' worth of frames, then take the next measurement.
+		++m_measureSettled;
+		const Renderer::ReferenceMetrics& metrics = m_renderer.referenceMetrics();
+		if (m_measureSettled > kMeasureSettleFrames && metrics.m_valid)
+		{
+			std::printf("Reference: %u frames. Relative MSE %.6f, bias %+.3f%%\n"
+				, m_renderer.referenceFrames(), metrics.m_relativeMse, 100.0f * metrics.m_bias);
+			std::fflush(stdout);
+			return false;
+		}
+		return true;
+	}
+
 	void drawWindow()
 	{
 		const uint32_t giDivisor = std::max(m_renderer.giDivisor(), 1u);
@@ -219,6 +264,7 @@ private:
 			m_scene.m_radius, m_scene.m_lightPosition,
 			m_bookmarks.get(model), m_bookmarks.error(), cameraPose(), screenshotResult,
 			m_renderer.bvhStats(), m_renderer.lightCount(), m_renderer.emissiveTriangleCount(),
+			m_renderer.referenceAccumulating(), m_renderer.referenceFrames(), m_renderer.referenceMetrics(),
 		};
 		const SettingsWindowOutput windowOutput = drawSettingsWindow(windowInput, m_settings, m_camera);
 		if (windowOutput.m_switchModel)
@@ -228,6 +274,14 @@ private:
 		if (windowOutput.m_moveLightToCamera)
 		{
 			moveLightToCamera();
+		}
+		if (windowOutput.m_toggleReference)
+		{
+			m_renderer.setReferenceAccumulation(!m_renderer.referenceAccumulating());
+		}
+		if (windowOutput.m_clearReference)
+		{
+			m_renderer.clearReference();
 		}
 		if (windowOutput.m_screenshot)
 		{
@@ -470,6 +524,8 @@ private:
 	bool m_bookmarkKeyDown[kMaxBookmarks] = {};
 
 	CameraBookmarks m_bookmarks;
+	int m_measureFrames = 0;    // --measure
+	int m_measureSettled = 0;   // frames since the reference stopped, plus one
 	bool m_screenshotRequested = false;
 	bool m_showWindow = true;
 

@@ -192,6 +192,7 @@ struct Settings
 	bool hideWindowInScreenshots = true;
 	bool taa = true; // temporal anti-aliasing
 	bool specularGi = true; // glossy reflections
+	int referenceView = 0;  // with a reference: 0 the image, 1 the reference, 2 the error against it
 	bool emissiveLighting = true; // emissive surfaces on screen light the scene through GI
 	int rayMode = int(RayMode::Hybrid);
 	int directLighting = int(DirectLighting::ReStirDi);
