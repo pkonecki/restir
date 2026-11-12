@@ -83,10 +83,17 @@ camera disappear and the interior stays visible from any side.
 ### Settings window
 
 Every toggle and setting is in the **ReSTIR GI** window (Dear ImGui, as
-bundled with bgfx's example code); new ones belong there too. It has three
+bundled with bgfx's example code); new ones belong there too. It has these
 sections:
 
 - **Scene**: the model (M cycles through them) and the camera speed.
+- **Light**: the point light's position (drag the fields, or press L to move
+  it to the camera), colour and intensity (relative to the default, which
+  scales with the scene size), and an orbit that circles it around the
+  scene's vertical axis at a chosen radius and speed. ReSTIR re-shades every
+  reservoir's sample each frame, so the bounced light follows a moving light,
+  while the denoised history trails it by a few frames. Loading a model, or
+  **Reset light**, puts it back at the scene's default position.
 - **Rendering**: multiple bounces (B), shadows (H), the denoiser (N), and
   whether reservoirs are reused through the world-space hash grid or from
   screen-space neighbourhoods (G).

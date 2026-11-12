@@ -15,8 +15,10 @@
 #include "imgui/imgui.h"
 
 #include <bx/commandline.h>
+#include <bx/timer.h>
 
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <filesystem>
 #include <stdexcept>
@@ -133,6 +135,12 @@ public:
 		imguiBeginFrame(m_mouseState.m_mx, m_mouseState.m_my, mouseButtons, m_mouseState.m_mz
 			, uint16_t(m_width), uint16_t(m_height), -1, kUiView);
 
+		const int64_t now = bx::getHPCounter();
+		m_deltaTime = m_lastFrameTime == 0
+			? 0.0f
+			: std::min(float(double(now - m_lastFrameTime) / double(bx::getHPFrequency())), 0.1f);
+		m_lastFrameTime = now;
+
 		m_camera.update(m_mouseState, m_scene.m_radius);
 		updateKeyboardShortcuts();
 		m_stats.update();
@@ -142,13 +150,19 @@ public:
 		{
 			m_modelPaths, m_modelIndex, m_modelError, m_stats,
 			std::max(1u, m_width / giDivisor), std::max(1u, m_height / giDivisor),
+			m_scene.m_radius, m_scene.m_lightPosition,
 		};
 		const SettingsWindowOutput windowOutput = drawSettingsWindow(windowInput, m_settings, m_camera);
 		if (windowOutput.m_switchModel)
 		{
 			switchModel(*windowOutput.m_switchModel);
 		}
+		if (windowOutput.m_moveLightToCamera)
+		{
+			moveLightToCamera();
+		}
 		applySettingChanges();
+		updateLight();
 
 		imguiEndFrame();
 
@@ -209,6 +223,34 @@ private:
 		{
 			switchModel((m_modelIndex + 1) % m_modelPaths.size());
 		}
+		if (keyPressed(entry::Key::KeyL, m_lightKeyDown))
+		{
+			moveLightToCamera();
+		}
+	}
+
+	void moveLightToCamera()
+	{
+		const bx::Vec3 eye = m_camera.eye();
+		m_settings.light.position[0] = eye.x;
+		m_settings.light.position[1] = eye.y;
+		m_settings.light.position[2] = eye.z;
+	}
+
+	// Moves the light along its orbit: a horizontal circle around the
+	// vertical axis through the scene's centre, at the light's height.
+	void updateLight()
+	{
+		LightSettings& light = m_settings.light;
+		if (!light.orbit)
+		{
+			return;
+		}
+
+		m_orbitAngle = std::fmod(m_orbitAngle + light.orbitSpeed * m_deltaTime, 2.0f * bx::kPi);
+		const float radius = light.orbitRadius * m_scene.m_radius;
+		light.position[0] = m_scene.m_center.x + radius * std::sin(m_orbitAngle);
+		light.position[2] = m_scene.m_center.z + radius * std::cos(m_orbitAngle);
 	}
 
 	// Reacts to settings that need more than the renderer reading them.
@@ -233,6 +275,9 @@ private:
 	{
 		m_scene = describeScene(_mesh);
 		m_renderer.setScene(_mesh, m_scene);
+		m_settings.light.position[0] = m_scene.m_lightPosition.x;
+		m_settings.light.position[1] = m_scene.m_lightPosition.y;
+		m_settings.light.position[2] = m_scene.m_lightPosition.z;
 
 		float cameraDistance = kInitialCameraDistance;
 		float cameraYaw = kInitialCameraYaw;
@@ -288,6 +333,11 @@ private:
 	bool m_denoiseKeyDown = false;
 	bool m_gridKeyDown = false;
 	bool m_modelKeyDown = false;
+	bool m_lightKeyDown = false;
+
+	int64_t m_lastFrameTime = 0;
+	float m_deltaTime = 0.0f; // seconds since the last frame, at most 0.1
+	float m_orbitAngle = 0.0f; // of the light, around the scene's vertical axis
 };
 
 } // namespace

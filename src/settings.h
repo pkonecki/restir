@@ -28,9 +28,23 @@ constexpr uint16_t kShadowFaceSizes[] = { 256, 512, 1024, 2048 };
 // Denoiser a-trous iterations, with tap spacings 1, 2, 4, 8, 16.
 constexpr int kMaxAtrousIterations = 5;
 
+// The point light. Its position is reset to the scene's default (see
+// describeScene) whenever a model is loaded.
+struct LightSettings
+{
+	float position[3] = { 0.0f, 0.0f, 0.0f };
+	float color[3] = { 1.0f, 1.0f, 1.0f };
+	float intensity = 1.0f; // times the default, which scales with the square of the scene size
+	bool orbit = false;       // circle around the vertical axis through the scene's centre, at the light's height
+	float orbitRadius = 0.35f; // in scene radii
+	float orbitSpeed = 0.5f;   // radians per second
+};
+
 // The defaults are what the example was tuned with.
 struct Settings
 {
+	LightSettings light;
+
 	bool multipleBounces = true;
 	bool shadows = true;
 	bool denoiser = true;

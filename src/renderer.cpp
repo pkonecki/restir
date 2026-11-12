@@ -296,15 +296,19 @@ void Renderer::render(const FrameInput& _input, const Settings& _settings)
 	bx::mtxMul(viewProjection, view, projection);
 	bx::mtxInverse(inverseViewProjection, viewProjection);
 
-	const float lightPosition[] =
-	{
-		m_scene.m_lightPosition.x, m_scene.m_lightPosition.y, m_scene.m_lightPosition.z, 1.0f,
-	};
-	// Intensity for the reference scene; scaled with the square of the
-	// scene size so the scene is lit the same at any scale.
+	const LightSettings& light = _settings.light;
+	const float lightPosition[] = { light.position[0], light.position[1], light.position[2], 1.0f };
+	// An intensity of 1 is tuned for the reference scene; it is scaled with
+	// the square of the scene size so the scene is lit the same at any scale.
 	const float sceneScale = radius / kReferenceSceneRadius;
-	const float lightIntensityScale = sceneScale * sceneScale;
-	const float lightColor[] = { lightIntensityScale, lightIntensityScale, lightIntensityScale, 1.0f };
+	const float lightIntensityScale = light.intensity * sceneScale * sceneScale;
+	const float lightColor[] =
+	{
+		light.color[0] * lightIntensityScale,
+		light.color[1] * lightIntensityScale,
+		light.color[2] * lightIntensityScale,
+		1.0f,
+	};
 	const float sceneInfo[] = { sceneScale, 0.0f, 0.0f, 0.0f };
 	const float cameraPosition[] = { eye.x, eye.y, eye.z, 1.0f };
 
@@ -323,7 +327,7 @@ void Renderer::render(const FrameInput& _input, const Settings& _settings)
 	const float shadowOptions[] = { _settings.shadows ? 1.0f : 0.0f, 0.0f, 0.0f, 0.0f };
 	float shadowViewProj[6 * 16];
 	{
-		const bx::Vec3 light = m_scene.m_lightPosition;
+		const bx::Vec3 lightCenter = { light.position[0], light.position[1], light.position[2] };
 		const bx::Vec3 faceDirections[6] =
 		{
 			{ 1.0f, 0.0f, 0.0f }, { -1.0f, 0.0f, 0.0f },
@@ -347,7 +351,7 @@ void Renderer::render(const FrameInput& _input, const Settings& _settings)
 				? bx::Vec3{ 0.0f, 0.0f, 1.0f }
 				: bx::Vec3{ 0.0f, 1.0f, 0.0f };
 			float faceView[16];
-			bx::mtxLookAt(faceView, light, bx::add(light, faceDirections[face]), up, bx::Handedness::Right);
+			bx::mtxLookAt(faceView, lightCenter, bx::add(lightCenter, faceDirections[face]), up, bx::Handedness::Right);
 			bx::mtxMul(&shadowViewProj[face * 16], faceView, shadowProjection);
 
 			const bgfx::ViewId viewId = bgfx::ViewId(kShadowViewBase + face);

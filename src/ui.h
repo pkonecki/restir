@@ -6,6 +6,8 @@
 #include "renderer.h"
 #include "settings.h"
 
+#include <bx/math.h>
+
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -42,12 +44,15 @@ struct SettingsWindowInput
 	const PerformanceStats& m_stats;
 	uint32_t m_giWidth;
 	uint32_t m_giHeight;
+	float m_sceneRadius;
+	bx::Vec3 m_defaultLightPosition; // where describeScene put the light
 };
 
 // What the window asks the application to do.
 struct SettingsWindowOutput
 {
 	std::optional<std::size_t> m_switchModel;
+	bool m_moveLightToCamera = false;
 };
 
 // Draws the window. Settings change in place; the caller reacts to what

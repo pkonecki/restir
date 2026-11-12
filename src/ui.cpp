@@ -99,6 +99,37 @@ SettingsWindowOutput drawSettingsWindow(const SettingsWindowInput& _input, Setti
 		ImGui::SetItemTooltip("WASD move, Shift/Ctrl up/down, drag to look, wheel for speed.");
 	}
 
+	if (ImGui::CollapsingHeader("Light", ImGuiTreeNodeFlags_DefaultOpen))
+	{
+		LightSettings& light = _settings.light;
+		ImGui::DragFloat3("Position", light.position, 0.005f * _input.m_sceneRadius, 0.0f, 0.0f, "%.3f");
+		ImGui::SetItemTooltip("Drag to move, or Ctrl+click to type.");
+		if (ImGui::Button("Move to camera (L)"))
+		{
+			output.m_moveLightToCamera = true;
+		}
+		ImGui::SameLine();
+		if (ImGui::Button("Reset light"))
+		{
+			const LightSettings defaults;
+			light = defaults;
+			light.position[0] = _input.m_defaultLightPosition.x;
+			light.position[1] = _input.m_defaultLightPosition.y;
+			light.position[2] = _input.m_defaultLightPosition.z;
+		}
+		ImGui::ColorEdit3("Colour", light.color, ImGuiColorEditFlags_Float);
+		ImGui::SliderFloat("Intensity", &light.intensity, 0.01f, 100.0f, "x%.2f"
+			, sliderFlags | ImGuiSliderFlags_Logarithmic);
+		ImGui::SetItemTooltip("Relative to the default, which scales with the scene size.");
+		ImGui::Checkbox("Orbit", &light.orbit);
+		ImGui::SetItemTooltip("Circle around the vertical axis through the scene's centre, at\nthe light's height. ReSTIR re-shades every reservoir's sample each\nframe, so the bounced light follows; the denoised history lags a little.");
+		if (light.orbit)
+		{
+			ImGui::SliderFloat("Orbit radius", &light.orbitRadius, 0.0f, 1.0f, "%.2f scene radii", sliderFlags);
+			ImGui::SliderFloat("Orbit speed", &light.orbitSpeed, -2.0f, 2.0f, "%.2f rad/s", sliderFlags);
+		}
+	}
+
 	if (ImGui::CollapsingHeader("Rendering", ImGuiTreeNodeFlags_DefaultOpen))
 	{
 		ImGui::Checkbox("Multiple bounces (B)", &_settings.multipleBounces);
