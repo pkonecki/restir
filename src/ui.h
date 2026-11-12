@@ -51,6 +51,7 @@ struct SettingsWindowInput
 	const std::string& m_bookmarkError;
 	CameraPose m_cameraPose;
 	const std::string& m_screenshotResult;
+	Renderer::BvhStats m_bvhStats;
 };
 
 // What the window asks the application to do.

@@ -21,9 +21,11 @@ SAMPLER2D(s_reservoirReceiver, 4); // xyz: receiver position, w: W
 SAMPLER2D(s_giMoments, 5);         // z: history length
 SAMPLER2D(s_emissive, 6);          // rgb: emitted radiance, a: ambient occlusion
 SAMPLER2D(s_shadingNormal, 7);     // rgb: encoded normal, with the normal map
+SAMPLER2D(s_reservoirNormal, 8);   // w: sample id (see restir.sh)
 
 uniform mat4 u_sceneInvViewProj;
-uniform vec4 u_debugView; // x: view (DebugView in settings.h), y: largest M
+uniform mat4 u_sceneViewProj;
+uniform vec4 u_debugView; // x: view (DebugView in settings.h), y: largest M, z: origin bottom-left, w: scene scale
 
 #define GRID_READ_ONLY
 #define GRID_CHECKSUM_STAGE 11
@@ -42,6 +44,7 @@ uniform vec4 u_debugView; // x: view (DebugView in settings.h), y: largest M
 #define VIEW_W          10
 #define VIEW_HISTORY    11
 #define VIEW_GRID       12
+#define VIEW_SOURCE     13
 
 #define kSkyDepth 0.99999
 #define kMaxAccumulation 16.0 // see fs_restir_spatial.sc
@@ -142,6 +145,40 @@ void main()
 	{
 		float historyLength = texture2DLod(s_giMoments, v_texcoord0, 0.0).z;
 		color = turbo((historyLength - 1.0) / (kMaxAccumulation - 1.0));
+	}
+	else if (view == VIEW_SOURCE)
+	{
+		// Where each pixel's reservoir sample came from, and how it is shaded
+		// now: black no sample (W = 0), blue found in the depth buffer, cyan
+		// found by the BVH and on a visible surface, orange found by the BVH
+		// and off screen or hidden (shaded from its triangle).
+		float weight = texture2DLod(s_reservoirReceiver, v_texcoord0, 0.0).w;
+		vec3 samplePosition = texture2DLod(s_reservoirSample, v_texcoord0, 0.0).xyz;
+		float sampleId = texture2DLod(s_reservoirNormal, v_texcoord0, 0.0).w;
+		if (weight <= 0.0)
+		{
+			color = vec3_splat(0.0);
+		}
+		else if (abs(sampleId) < 0.5)
+		{
+			color = vec3(0.15, 0.35, 1.0);
+		}
+		else
+		{
+			bool visible = false;
+			vec4 clip = mul(u_sceneViewProj, vec4(samplePosition, 1.0));
+			if (clip.w > 0.0001)
+			{
+				vec2 uv = vec2(clip.x, clip.y * (u_debugView.z > 0.5 ? 1.0 : -1.0)) / clip.w * 0.5 + 0.5;
+				if (uv.x > 0.0 && uv.x < 1.0 && uv.y > 0.0 && uv.y < 1.0)
+				{
+					float sampleDepth = texture2DLod(s_depth, uv, 0.0).x;
+					visible = sampleDepth < kSkyDepth
+						&& distance(reconstructWorldPosition(uv, sampleDepth), samplePosition) <= 0.1 * u_debugView.w;
+				}
+			}
+			color = visible ? vec3(0.1, 0.9, 0.9) : vec3(1.0, 0.55, 0.1);
+		}
 	}
 	else if (view == VIEW_GRID)
 	{

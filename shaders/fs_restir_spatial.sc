@@ -120,11 +120,13 @@ void main()
 	vec3 canonicalContribution;
 	vec3 canonicalNormal;
 	if (canonicalWeight > 0.0
-	&&  evaluateSample(position, normal, albedo, ownSample.xyz, canonicalContribution, canonicalNormal))
+	&&  evaluateSample(position, normal, albedo, ownSample.xyz, texture2DLod(s_reservoirNormal, v_texcoord0, 0.0).w
+		, canonicalContribution, canonicalNormal))
 	{
 		canonical.contribution = canonicalContribution;
 		canonical.position = ownSample.xyz;
 		canonical.normal = canonicalNormal;
+		canonical.id = texture2DLod(s_reservoirNormal, v_texcoord0, 0.0).w;
 		canonical.target = luminance(canonicalContribution);
 	}
 
@@ -163,7 +165,7 @@ void main()
 		||  !acceptNeighbour(
 			  texture2DLod(s_reservoirSample, neighbourUv, 0.0)
 			, texture2DLod(s_reservoirReceiver, neighbourUv, 0.0)
-			, texture2DLod(s_reservoirNormal, neighbourUv, 0.0).xyz
+			, texture2DLod(s_reservoirNormal, neighbourUv, 0.0)
 			, position
 			, normal
 			, radius

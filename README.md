@@ -258,8 +258,9 @@ are the defaults; the settings window changes them):
    on insertion and on every lookup, so cell boundaries do not show up as
    blocks.
 2. **Temporal pass** (`shaders/fs_restir_temporal.sc`): traces two
-   cosine-distributed rays through the depth buffer and resamples the hits
-   into a reservoir. It then combines that reservoir, using pairwise MIS and
+   cosine-distributed rays through the depth buffer, and the rays it cannot
+   answer through the scene's BVH (below), and resamples the hits into a
+   reservoir. It then combines that reservoir, using pairwise MIS and
    the reconnection Jacobian, with two reservoirs picked at random from last
    frame's grid cell around the receiver (M capped at 20). This needs no
    reprojection: a surface seen anywhere on screen last frame contributes if
@@ -297,10 +298,45 @@ group) averages the log luminance of 64x64 samples of it, and the tone
 mapping pass (`shaders/fs_tonemap.sc`, operators in `shaders/tonemap.sh`)
 applies the exposure and the tone mapper on the way to the window.
 
-Known limits: rays only see the depth buffer, so off-screen, occluded and
-back-facing geometry cannot contribute, which also caps the extra bounces. For
-the same reason, a reservoir reused from the grid is dropped when its sample
-point is no longer visible on screen. Bounced light lags a few frames behind
+### Off-screen geometry: the BVH
+
+A ray marched through the depth buffer only finds surfaces on screen. Rays
+that leave the screen, or pass behind what it shows, find nothing there, so
+by default they are traced again through a bounding volume hierarchy of every
+triangle in the scene. It is built on the CPU when a model loads (binned SAH,
+up to four triangles per leaf; Sponza's 262,000 triangles take under 0.2 s
+and 32 MB) and uploaded as one GPU buffer that also holds each triangle's
+average diffuse albedo (material factors, vertex colours and the average of
+its base colour texture) and each material's emission (`src/bvh.cpp`;
+traversal in `shaders/bvh.sh`).
+
+A reservoir stores the triangle its sample lies on, as well as the side its
+ray came from. A sample point that is a visible surface is shaded from the
+G-buffer as before; one that is off screen or hidden is shaded from its
+triangle: its average albedo, its plane normal, the point light through the
+cube shadow map (which covers the whole scene), and its emission. Such
+samples therefore survive camera motion that hides them, where samples found
+in the depth buffer are dropped. The **Rays** setting (R) chooses:
+
+- **Depth buffer only**: as before.
+- **Depth buffer, then BVH** (default): the BVH for the rays the depth
+  buffer cannot answer. Visibility tests between receivers and reused samples
+  stay in screen space.
+- **BVH only**: every ray and every visibility test goes through the BVH,
+  which removes the screen-space visibility bias at a higher cost.
+
+The **Sample source** debug view shows, per pixel, whether the reservoir's
+sample came from the depth buffer or the BVH, and whether it is visible. On
+Mesa's software rasterizer, the hybrid mode made the temporal pass about 2.5
+times as expensive in Sponza, and BVH only also doubled the spatial pass;
+GPUs will differ.
+
+Known limits: off-screen sample points have no texture detail (one average
+albedo per triangle), ignore alpha masks (foliage is opaque to BVH rays),
+and get no bounce light of their own, since that comes from the on-screen
+history; so the extra bounces still come from what is on screen. Samples
+found in the depth buffer are dropped when they leave the screen, as the
+G-buffer does not record which triangle they lie on. Bounced light lags a few frames behind
 camera motion; shadow edges have a fixed softness rather than one that matches
 the size of the light; and screen-space visibility and the clamped
 reconnection Jacobian leave a bias of a few percent. This is a real-time

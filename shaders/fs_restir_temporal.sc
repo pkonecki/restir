@@ -15,6 +15,10 @@ $input v_texcoord0
  *     contributes, as long as it lies in this receiver's cell.
  *   - Screen-space reuse: this pixel's reprojected reservoir.
  *
+ * Fresh rays march the depth buffer; those it cannot answer (they leave the
+ * screen, or pass behind what it shows) are traced through the scene's BVH
+ * instead, or every ray is, depending on the ray mode (bvh.sh).
+ *
  * The result is written to the reservoir targets (see restir.sh). It is what
  * the hash grid built this frame points to, for the spatial pass and for the
  * next frame's temporal reuse. A sample taken over from another receiver is
@@ -60,15 +64,32 @@ void main()
 		// Every candidate counts, including rays that found nothing.
 		canonical.count += 1.0;
 
-		vec3 hitPosition;
-		if (!traceScreenSpaceRay(rayOrigin, direction, kMaxRayDistance, hitPosition))
+		// The depth buffer first (unless every ray uses the BVH), then the
+		// BVH for the rays it cannot answer: those that leave the screen or
+		// pass behind what it shows.
+		vec3 hitPosition = vec3_splat(0.0);
+		float hitId = 0.0;
+		bool hit = kRayMode != RAY_MODE_BVH
+			&& traceScreenSpaceRay(rayOrigin, direction, kMaxRayDistance, hitPosition);
+		if (!hit && kRayMode != RAY_MODE_SCREEN)
+		{
+			float hitDistance;
+			int triangleIndex = traceBvh(rayOrigin, direction, kMaxBvhRayDistance, false, hitDistance);
+			if (triangleIndex >= 0)
+			{
+				hit = true;
+				hitPosition = rayOrigin + direction * hitDistance;
+				hitId = encodeSampleId(triangleIndex, direction);
+			}
+		}
+		if (!hit)
 		{
 			continue;
 		}
 
 		vec3 contribution;
 		vec3 hitNormal;
-		if (!evaluateSample(position, normal, albedo, hitPosition, contribution, hitNormal))
+		if (!evaluateSample(position, normal, albedo, hitPosition, hitId, contribution, hitNormal))
 		{
 			continue;
 		}
@@ -77,7 +98,7 @@ void main()
 		float sourcePdf = dot(normal, normalize(hitPosition - position)) / kPi;
 		if (target > 0.0 && sourcePdf > 0.0001)
 		{
-			updateReservoir(canonical, contribution, hitPosition, hitNormal, target, target / sourcePdf, randomSelect);
+			updateReservoir(canonical, contribution, hitPosition, hitNormal, hitId, target, target / sourcePdf, randomSelect);
 		}
 	}
 
@@ -124,7 +145,7 @@ void main()
 		||  !acceptNeighbour(
 			  texture2DLod(s_historySample, historyUv, 0.0)
 			, texture2DLod(s_historyReceiver, historyUv, 0.0)
-			, texture2DLod(s_historyNormal, historyUv, 0.0).xyz
+			, texture2DLod(s_historyNormal, historyUv, 0.0)
 			, position
 			, normal
 			, radius
@@ -142,5 +163,5 @@ void main()
 
 	gl_FragData[0] = vec4(mis.combined.position, mis.totalCount);
 	gl_FragData[1] = vec4(position, combinedWeight);
-	gl_FragData[2] = vec4(normal, 0.0);
+	gl_FragData[2] = vec4(normal, mis.combined.id);
 }

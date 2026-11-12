@@ -192,6 +192,9 @@ SettingsWindowOutput drawSettingsWindow(const SettingsWindowInput& _input, Setti
 		ImGui::Checkbox("Denoiser (N)", &_settings.denoiser);
 		ImGui::Checkbox("Emissive lighting (E)", &_settings.emissiveLighting);
 		ImGui::SetItemTooltip("Emissive surfaces light the scene through GI. Like all GI here,\nonly the emitters visible on screen contribute.");
+		ImGui::Combo("Rays (R)", &_settings.rayMode, kRayModeNames, int(RayMode::Count));
+		ImGui::SetItemTooltip("Depth buffer: rays only find what is on screen.\nThen BVH: rays the depth buffer cannot answer (off screen, or\nbehind what it shows) are traced through the scene's BVH.\nBVH only: every ray and visibility test is.\n\nBVH: %u triangles, %u nodes, depth %u, built in %.0f ms."
+			, _input.m_bvhStats.m_triangles, _input.m_bvhStats.m_nodes, _input.m_bvhStats.m_depth, _input.m_bvhStats.m_buildMs);
 		int reuse = _settings.worldSpaceReuse ? 0 : 1;
 		if (ImGui::Combo("Reuse (G)", &reuse, "World-space hash grid\0Screen-space\0"))
 		{

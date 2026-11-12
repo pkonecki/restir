@@ -50,6 +50,23 @@ constexpr const char* kTonemapperNames[] =
 };
 static_assert(BX_COUNTOF(kTonemapperNames) == size_t(Tonemapper::Count));
 
+// How the GI passes trace rays. Keep in sync with shaders/bvh.sh.
+enum class RayMode : int
+{
+	ScreenSpace, // the depth buffer only
+	Hybrid,      // the depth buffer, then the BVH for the rays it cannot answer
+	Bvh,         // the BVH for every ray and visibility test
+	Count
+};
+
+constexpr const char* kRayModeNames[] =
+{
+	"Depth buffer only",
+	"Depth buffer, then BVH",
+	"BVH only",
+};
+static_assert(BX_COUNTOF(kRayModeNames) == size_t(RayMode::Count));
+
 // What the window shows. The first four are lighting, tone mapped like the
 // final image; the others are data, shown as display colours. Keep in sync
 // with shaders/fs_debug.sc.
@@ -68,6 +85,7 @@ enum class DebugView : int
 	ReservoirWeight,
 	HistoryLength,
 	HashGridCells,
+	SampleSource,
 	Count
 };
 
@@ -86,6 +104,7 @@ constexpr const char* kDebugViewNames[] =
 	"Reservoir W",
 	"History length",
 	"Hash grid cells",
+	"Sample source",
 };
 static_assert(BX_COUNTOF(kDebugViewNames) == size_t(DebugView::Count));
 
@@ -104,6 +123,7 @@ constexpr const char* kDebugViewHelp[] =
 	"Unbiased contribution weight of each pixel's reservoir, on a log\nscale from 2^-8 (blue) to 2^8 (red); black where it is zero.",
 	"Frames accumulated in each pixel's GI estimate, from 1 (blue: just\ndisoccluded, history rejected) to 16 (red).",
 	"A colour per world-space hash grid cell (without the lookup jitter),\nbrighter when it lists more reservoirs, grey when empty.",
+	"Where each pixel's reservoir sample came from: blue the depth buffer,\ncyan the BVH and on a visible surface, orange the BVH and off screen\nor hidden (shaded from its triangle); black where W is zero.",
 };
 static_assert(BX_COUNTOF(kDebugViewHelp) == size_t(DebugView::Count));
 
@@ -131,6 +151,7 @@ struct Settings
 	bool vsync = true;
 	bool hideWindowInScreenshots = true;
 	bool emissiveLighting = true; // emissive surfaces on screen light the scene through GI
+	int rayMode = int(RayMode::Hybrid);
 
 	int debugView = int(DebugView::Final);
 

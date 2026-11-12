@@ -1,9 +1,13 @@
 #include "renderer.h"
 
+#include "bvh.h"
+
 #include "bgfx_utils.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
+#include <cstdio>
 #include <stdexcept>
 
 namespace
@@ -52,6 +56,9 @@ constexpr uint32_t kGridTableSize = 65536;
 constexpr uint32_t kGridCellCapacity = 32;
 constexpr float kGridMinCellSize = 0.02f; // for the reference scene, scaled with the scene
 constexpr float kGridCellPixels = 6.0f;   // cell size, in GI pixels, that the grid aims for
+
+// Buffer stage of the BVH in the GI passes (BVH_STAGE in shaders/restir.sh).
+constexpr uint8_t kBvhStage = 15;
 
 // Cap on the M of every reused reservoir (kMaxHistory in shaders/restir.sh).
 constexpr int kMaxReusedHistory = 20;
@@ -175,6 +182,7 @@ void Renderer::init(const Settings& _settings)
 	m_debugViewUniform = bgfx::createUniform("u_debugView", bgfx::UniformType::Vec4);
 	m_emissiveSampler = bgfx::createUniform("s_emissive", bgfx::UniformType::Sampler);
 	m_shadingNormalSampler = bgfx::createUniform("s_shadingNormal", bgfx::UniformType::Sampler);
+	m_bvhInfoUniform = bgfx::createUniform("u_bvhInfo", bgfx::UniformType::Vec4);
 	m_compositeOptionsUniform = bgfx::createUniform("u_compositeOptions", bgfx::UniformType::Vec4);
 
 	// Two hash grids, this frame's and last frame's, like the reservoirs
@@ -260,7 +268,7 @@ void Renderer::shutdown()
 		m_baseColorSampler, m_metallicRoughnessSampler, m_materialInfoUniform,
 		m_normalMapSampler, m_occlusionSampler, m_emissiveMapSampler,
 		m_materialEmissiveUniform, m_materialFactorsUniform,
-		m_emissiveSampler, m_shadingNormalSampler,
+		m_emissiveSampler, m_shadingNormalSampler, m_bvhInfoUniform,
 		m_hdrSampler, m_exposureAdaptUniform, m_tonemapUniform,
 		m_debugViewUniform, m_compositeOptionsUniform,
 	};
@@ -296,6 +304,25 @@ void Renderer::setScene(const SceneMesh& _mesh, const SceneInfo& _info)
 		, BGFX_BUFFER_INDEX32
 		);
 
+	// The BVH for rays the depth buffer cannot answer, in one buffer of vec4s.
+	const auto buildStart = std::chrono::steady_clock::now();
+	const SceneBvh bvh = buildBvh(_mesh);
+	const double buildMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - buildStart).count();
+	std::fprintf(stderr, "BVH: %u triangles, %u nodes, depth %u, %.1f MB, built in %.0f ms.\n"
+		, bvh.m_triangleCount, bvh.m_nodeCount, bvh.m_depth
+		, double(bvh.m_data.size() * sizeof(float)) / (1024.0 * 1024.0), buildMs);
+	bgfx::VertexLayout vec4Layout;
+	vec4Layout.begin().add(bgfx::Attrib::TexCoord0, 4, bgfx::AttribType::Float).end();
+	m_bvhBuffer = bgfx::createVertexBuffer(
+		  bgfx::copy(bvh.m_data.data(), uint32_t(bvh.m_data.size() * sizeof(float)))
+		, vec4Layout
+		, BGFX_BUFFER_COMPUTE_READ
+		);
+	m_bvhInfo[0] = float(bvh.m_triangleOffset);
+	m_bvhInfo[1] = float(bvh.m_materialOffset);
+	m_bvhInfo[2] = bgfx::isValid(m_bvhBuffer) ? float(bvh.m_nodeCount) : 0.0f;
+	m_bvhStats = { bvh.m_triangleCount, bvh.m_nodeCount, bvh.m_depth, float(buildMs) };
+
 	m_scene = _info;
 	m_historyValid = false;
 	m_exposureValid = false;
@@ -303,6 +330,7 @@ void Renderer::setScene(const SceneMesh& _mesh, const SceneInfo& _info)
 
 void Renderer::destroyScene()
 {
+	destroyIfValid(m_bvhBuffer);
 	destroyIfValid(m_vbh);
 	destroyIfValid(m_ibh);
 	for (bgfx::TextureHandle& texture : m_modelTextures)
@@ -502,6 +530,7 @@ void Renderer::render(const FrameInput& _input, const Settings& _settings)
 		, uint32_t(giWidth + 7) / 8, uint32_t(giHeight + 7) / 8, 1);
 
 	// Uniforms and textures both GI passes use (see shaders/restir.sh).
+	const float bvhInfo[] = { m_bvhInfo[0], m_bvhInfo[1], m_bvhInfo[2], float(_settings.rayMode) };
 	const auto setGiPassInputs = [&]()
 	{
 		bgfx::setTexture(0, m_albedoSampler, m_gbufferAlbedo);
@@ -527,6 +556,8 @@ void Renderer::render(const FrameInput& _input, const Settings& _settings)
 		bgfx::setUniform(m_sceneInfoUniform, sceneInfo);
 		bgfx::setUniform(m_gridInfoUniform, gridInfo);
 		bgfx::setUniform(m_restirOptionsUniform, restirOptions);
+		bgfx::setBuffer(kBvhStage, m_bvhBuffer, bgfx::Access::Read);
+		bgfx::setUniform(m_bvhInfoUniform, bvhInfo);
 	};
 	const auto setGrid = [](const bgfx::DynamicIndexBufferHandle* _buffers)
 	{
@@ -644,8 +675,8 @@ void Renderer::render(const FrameInput& _input, const Settings& _settings)
 		{
 			float(_settings.debugView),
 			float(_settings.initialCandidates + _settings.temporalTaps * kMaxReusedHistory),
-			0.0f,
-			0.0f,
+			bgfx::getCaps()->originBottomLeft ? 1.0f : 0.0f,
+			sceneScale,
 		};
 		bgfx::setTexture(0, m_albedoSampler, m_gbufferAlbedo);
 		bgfx::setTexture(1, m_normalSampler, m_gbufferNormal);
@@ -655,7 +686,9 @@ void Renderer::render(const FrameInput& _input, const Settings& _settings)
 		bgfx::setTexture(5, m_giMomentsSampler, m_historyMoments[historyWrite]);
 		bgfx::setTexture(6, m_emissiveSampler, m_gbufferEmissive);
 		bgfx::setTexture(7, m_shadingNormalSampler, m_gbufferShadingNormal);
+		bgfx::setTexture(8, m_reservoirNormalSampler, m_historyNormal[historyWrite]);
 		setGrid(currentGrid);
+		bgfx::setUniform(m_viewProjection, viewProjection);
 		bgfx::setUniform(m_inverseViewProjection, inverseViewProjection);
 		bgfx::setUniform(m_gridInfoUniform, gridInfo);
 		bgfx::setUniform(m_gridCameraUniform, cameraPosition);
@@ -899,7 +932,7 @@ void Renderer::createRenderTargets(uint32_t _width, uint32_t _height, const Sett
 		m_historyColor[idx] = createTarget(giWidth, giHeight, bgfx::TextureFormat::RGBA16F);
 		m_historySample[idx] = createTarget(giWidth, giHeight, bgfx::TextureFormat::RGBA32F);
 		m_historyReceiver[idx] = createTarget(giWidth, giHeight, bgfx::TextureFormat::RGBA32F);
-		m_historyNormal[idx] = createTarget(giWidth, giHeight, bgfx::TextureFormat::RGBA16F);
+		m_historyNormal[idx] = createTarget(giWidth, giHeight, bgfx::TextureFormat::RGBA32F); // w: exact triangle ids
 		m_historyMoments[idx] = createTarget(giWidth, giHeight, bgfx::TextureFormat::RGBA16F);
 		const bgfx::TextureHandle reservoirTextures[] =
 		{

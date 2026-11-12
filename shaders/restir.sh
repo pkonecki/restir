@@ -12,7 +12,16 @@
  *
  *   sample:   xyz = sample position,   w = M (number of candidates seen)
  *   receiver: xyz = receiver position, w = W (unbiased contribution weight)
- *   normal:   xyz = receiver normal
+ *   normal:   xyz = receiver normal, w = sample id (see below)
+ *
+ * Sample ids: 0 for a sample point found in the depth buffer; +-(t + 1) for
+ * one found by tracing the BVH, where t is the triangle it lies on and the
+ * sign says which side of the triangle's plane normal faces the receiver
+ * that found it. A sample point that is a visible surface is shaded from the
+ * G-buffer; otherwise, if it lies on a known triangle, from that triangle's
+ * data (its average albedo, its plane normal, the point light through the
+ * cube shadow map, its emission). So BVH samples survive going off screen or
+ * behind other geometry, while depth buffer samples are dropped then.
  *
  * Emissive surfaces: a sample point on one adds its emitted radiance, so
  * emitters that are on screen light the scene through the same reservoirs.
@@ -52,6 +61,9 @@ uniform vec4 u_restirOptions; // x: initial candidates, y: temporal taps, z: spa
 #define SHADOW_SAMPLER_STAGE 7
 #include "shadow.sh"
 
+#define BVH_STAGE 15
+#include "bvh.sh"
+
 #define GRID_READ_ONLY
 #define GRID_CHECKSUM_STAGE 11
 #define GRID_COUNT_STAGE    12
@@ -81,6 +93,7 @@ uniform vec4 u_restirOptions; // x: initial candidates, y: temporal taps, z: spa
 #define kRayBias (0.02 * kSceneScale)          // origin offset along the normal
 #define kSurfaceBias (0.01 * kSceneScale)      // depth a ray must sink below a surface to count as behind it
 #define kMaxRayDistance (3.6 * kSceneScale)
+#define kMaxBvhRayDistance (4.0 * kSceneScale) // past the far side of the scene (radius 1.75, scaled)
 #define kSampleTolerance (0.1 * kSceneScale)   // sample point must still be this close to a visible surface
 #define kReceiverRadius (0.4 * kSceneScale)    // max distance between receivers that share reservoirs
 #define kReceiverPlane (0.03 * kSceneScale)    // max distance of a reused receiver from our tangent plane
@@ -195,6 +208,24 @@ vec3 evaluateSecondaryDirect(vec2 _uv, vec3 _position, vec3 _normal)
 	float normalLight = max(dot(_normal, toLight * inversesqrt(distanceSquared)), 0.0);
 	return albedo * (u_lightColor.rgb / distanceSquared) * (normalLight / kPi)
 		* (normalLight > 0.0 ? lightVisibility(_position, _normal, 1) : 0.0);
+}
+
+// The same for a point that is not a visible surface, from its triangle.
+vec3 evaluateWorldDirect(vec3 _albedo, vec3 _position, vec3 _normal)
+{
+	vec3 toLight = u_lightPosition.xyz - _position;
+	float distanceSquared = max(dot(toLight, toLight), 0.01 * kSceneScale * kSceneScale);
+	float normalLight = max(dot(_normal, toLight * inversesqrt(distanceSquared)), 0.0);
+	return _albedo * (u_lightColor.rgb / distanceSquared) * (normalLight / kPi)
+		* (normalLight > 0.0 ? lightVisibility(_position, _normal, 1) : 0.0);
+}
+
+// Encodes the triangle a BVH ray hit, and the side the ray came from.
+float encodeSampleId(int _triangle, vec3 _rayDirection)
+{
+	vec3 v0 = bvhVertex(_triangle, 0);
+	vec3 planeNormal = cross(bvhVertex(_triangle, 1) - v0, bvhVertex(_triangle, 2) - v0);
+	return dot(planeNormal, _rayDirection) <= 0.0 ? float(_triangle + 1) : -float(_triangle + 1);
 }
 
 // Indirect radiance that left a surface point last frame: the (denoised,
@@ -349,16 +380,18 @@ bool traceScreenSpaceRay(
 }
 
 // Evaluates the integrand f = (albedo / pi) * Lo(sample -> receiver) * cos
-// for a sample point, re-shading it from the current G-buffer. Lo is the
-// direct radiance plus its emission and, with multiple bounces, last frame's
-// indirect radiance.
-// Returns false when the point is no longer a visible surface, in which case
-// the reservoir that carried it cannot be reused at all.
+// for a sample point, re-shading it from the current G-buffer, or from its
+// triangle when it is not a visible surface (see the sample ids above). Lo
+// is the direct radiance plus its emission and, with multiple bounces, last
+// frame's indirect radiance.
+// Returns false when the point can no longer be shaded, in which case the
+// reservoir that carried it cannot be reused at all.
 bool evaluateSample(
 	  vec3 _receiverPosition
 	, vec3 _receiverNormal
 	, vec3 _receiverAlbedo
 	, vec3 _samplePosition
+	, float _sampleId
 	, out vec3 _contribution
 	, out vec3 _sampleNormal
 	)
@@ -366,26 +399,35 @@ bool evaluateSample(
 	_contribution = vec3_splat(0.0);
 	_sampleNormal = vec3(0.0, 0.0, 1.0);
 
+	// A visible surface: shade it from the G-buffer.
+	bool visibleSurface = false;
 	vec2 sampleUv;
 	float sampleViewDepth;
-	if (!projectToScreen(_samplePosition, sampleUv, sampleViewDepth))
+	if (projectToScreen(_samplePosition, sampleUv, sampleViewDepth))
+	{
+		float sampleDepth = texture2DLod(s_depth, sampleUv, 0.0).x;
+		visibleSurface = sampleDepth < kSkyDepth
+			&& distance(reconstructWorldPosition(sampleUv, sampleDepth), _samplePosition) <= kSampleTolerance;
+	}
+
+	// Otherwise only a point on a known triangle can still be shaded.
+	int triangleIndex = int(abs(_sampleId) + 0.5) - 1;
+	if (!visibleSurface && (triangleIndex < 0 || !bvhAvailable()))
 	{
 		return false;
 	}
 
-	float sampleDepth = texture2DLod(s_depth, sampleUv, 0.0).x;
-	if (sampleDepth >= kSkyDepth)
+	if (visibleSurface)
 	{
-		return false;
+		_sampleNormal = decodeNormal(sampleUv);
+	}
+	else
+	{
+		vec3 v0 = bvhVertex(triangleIndex, 0);
+		_sampleNormal = normalize(cross(bvhVertex(triangleIndex, 1) - v0, bvhVertex(triangleIndex, 2) - v0))
+			* (_sampleId < 0.0 ? -1.0 : 1.0);
 	}
 
-	vec3 surfacePosition = reconstructWorldPosition(sampleUv, sampleDepth);
-	if (distance(surfacePosition, _samplePosition) > kSampleTolerance)
-	{
-		return false;
-	}
-
-	_sampleNormal = decodeNormal(sampleUv);
 	vec3 toReceiver = _receiverPosition - _samplePosition;
 	float distanceSquared = dot(toReceiver, toReceiver);
 	if (distanceSquared < kMinDistanceSquared * 0.01)
@@ -402,9 +444,14 @@ bool evaluateSample(
 		return true;
 	}
 
-	vec3 radiance = evaluateSecondaryDirect(sampleUv, _samplePosition, _sampleNormal)
-		+ previousIndirect(_samplePosition, _sampleNormal, diffuseAlbedo(sampleUv))
-		+ texture2DLod(s_emissive, sampleUv, 0.0).rgb * u_sceneInfo.y;
+	// Off-screen points have no history to take bounce light from.
+	vec3 radiance = visibleSurface
+		? evaluateSecondaryDirect(sampleUv, _samplePosition, _sampleNormal)
+			+ previousIndirect(_samplePosition, _sampleNormal, diffuseAlbedo(sampleUv))
+			+ texture2DLod(s_emissive, sampleUv, 0.0).rgb * u_sceneInfo.y
+		: evaluateWorldDirect(bvhTriangleAlbedo(triangleIndex), _samplePosition, _sampleNormal)
+			+ previousIndirect(_samplePosition, _sampleNormal, bvhTriangleAlbedo(triangleIndex))
+			+ bvhTriangleEmission(triangleIndex) * u_sceneInfo.y;
 	_contribution = _receiverAlbedo * radiance * (receiverCosine / kPi);
 	return true;
 }
@@ -430,12 +477,20 @@ float geometryTerm(vec3 _receiverPosition, vec3 _receiverNormal, vec3 _samplePos
 		: 0.0;
 }
 
-// Screen-space visibility between a receiver and a sample point.
+// Visibility between a receiver and a sample point: through the BVH when
+// every ray uses it, through the depth buffer otherwise.
 bool isVisible(vec3 _receiverPosition, vec3 _receiverNormal, vec3 _samplePosition)
 {
 	vec3 origin = _receiverPosition + _receiverNormal * kRayBias;
 	vec3 toSample = _samplePosition - origin;
 	float sampleDistance = length(toSample);
+	if (kRayMode == RAY_MODE_BVH && bvhAvailable())
+	{
+		float occluderDistance;
+		return traceBvh(origin, toSample / max(sampleDistance, 0.0001)
+			, sampleDistance - kRayBias, true, occluderDistance) < 0;
+	}
+
 	vec3 occluderPosition;
 	return !traceScreenSpaceRay(
 		  origin
@@ -469,6 +524,7 @@ struct Reservoir
 	vec3 contribution; // integrand f of the selected sample at this receiver
 	vec3 position;     // selected sample point
 	vec3 normal;       // surface normal at the selected sample point
+	float id;          // sample id (see above)
 	float target;      // target function p-hat = luminance(f)
 	float weightSum;   // sum of resampling weights
 	float count;       // M
@@ -480,6 +536,7 @@ Reservoir emptyReservoir()
 	reservoir.contribution = vec3_splat(0.0);
 	reservoir.position = vec3_splat(0.0);
 	reservoir.normal = vec3(0.0, 0.0, 1.0);
+	reservoir.id = 0.0;
 	reservoir.target = 0.0;
 	reservoir.weightSum = 0.0;
 	reservoir.count = 0.0;
@@ -492,6 +549,7 @@ bool updateReservoir(
 	, vec3 _contribution
 	, vec3 _position
 	, vec3 _normal
+	, float _id
 	, float _target
 	, float _weight
 	, float _random
@@ -503,6 +561,7 @@ bool updateReservoir(
 		_reservoir.contribution = _contribution;
 		_reservoir.position = _position;
 		_reservoir.normal = _normal;
+		_reservoir.id = _id;
 		_reservoir.target = _target;
 		return true;
 	}
@@ -514,6 +573,7 @@ bool updateReservoir(
 struct NeighbourReservoir
 {
 	vec3 samplePosition;
+	float sampleId;
 	vec3 receiverPosition;
 	vec3 receiverNormal;
 	float count;  // M, capped
@@ -526,7 +586,7 @@ struct NeighbourReservoir
 bool acceptNeighbour(
 	  vec4 _sample
 	, vec4 _receiver
-	, vec3 _receiverNormal
+	, vec4 _receiverNormal // w: sample id
 	, vec3 _position
 	, vec3 _normal
 	, float _radius
@@ -534,16 +594,17 @@ bool acceptNeighbour(
 	)
 {
 	_neighbour.samplePosition = _sample.xyz;
+	_neighbour.sampleId = _receiverNormal.w;
 	_neighbour.receiverPosition = _receiver.xyz;
 	_neighbour.receiverNormal = vec3(0.0, 0.0, 1.0);
 	_neighbour.count = min(_sample.w, kMaxHistory);
 	_neighbour.weight = _receiver.w;
-	if (_sample.w <= 0.0 || dot(_receiverNormal, _receiverNormal) < 0.5)
+	if (_sample.w <= 0.0 || dot(_receiverNormal.xyz, _receiverNormal.xyz) < 0.5)
 	{
 		return false;
 	}
 
-	_neighbour.receiverNormal = normalize(_receiverNormal);
+	_neighbour.receiverNormal = normalize(_receiverNormal.xyz);
 	vec3 receiverOffset = _receiver.xyz - _position;
 	return dot(receiverOffset, receiverOffset) <= _radius * _radius
 		&& abs(dot(receiverOffset, _normal)) <= kReceiverPlane
@@ -663,7 +724,8 @@ void addNeighbour(
 	vec3 contribution;
 	vec3 sampleNormal;
 	if (_neighbour.weight > 0.0
-	&&  evaluateSample(_position, _normal, _albedo, _neighbour.samplePosition, contribution, sampleNormal))
+	&&  evaluateSample(_position, _normal, _albedo, _neighbour.samplePosition, _neighbour.sampleId
+		, contribution, sampleNormal))
 	{
 		float target = luminance(contribution);
 		float jacobian = reconnectionJacobian(
@@ -676,7 +738,8 @@ void addNeighbour(
 		float misWeight = denominator > 0.0 ? pairWeight * neighbourDensity / denominator : 0.0;
 		float weight = misWeight * target * _neighbour.weight * jacobian;
 		if (weight > 0.0
-		&&  updateReservoir(_mis.combined, contribution, _neighbour.samplePosition, sampleNormal, target, weight, _random))
+		&&  updateReservoir(_mis.combined, contribution, _neighbour.samplePosition, sampleNormal
+			, _neighbour.sampleId, target, weight, _random))
 		{
 			_mis.neighbourSelected = true;
 		}
@@ -698,7 +761,7 @@ float finishPairwiseMis(
 	if (_mis.hasCanonical)
 	{
 		float weight = _mis.canonicalShare * _canonical.target * _canonicalWeight;
-		if (updateReservoir(_mis.combined, _canonical.contribution, _canonical.position, _canonical.normal
+		if (updateReservoir(_mis.combined, _canonical.contribution, _canonical.position, _canonical.normal, _canonical.id
 			, _canonical.target, weight, _random))
 		{
 			_mis.neighbourSelected = false;

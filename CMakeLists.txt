@@ -134,6 +134,8 @@ add_executable(restir_gi
 	src/main.cpp
 	src/bookmarks.cpp
 	src/bookmarks.h
+	src/bvh.cpp
+	src/bvh.h
 	src/camera.cpp
 	src/camera.h
 	src/capture.cpp

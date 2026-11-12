@@ -215,6 +215,7 @@ private:
 			std::max(1u, m_width / giDivisor), std::max(1u, m_height / giDivisor),
 			m_scene.m_radius, m_scene.m_lightPosition,
 			m_bookmarks.get(model), m_bookmarks.error(), cameraPose(), screenshotResult,
+			m_renderer.bvhStats(),
 		};
 		const SettingsWindowOutput windowOutput = drawSettingsWindow(windowInput, m_settings, m_camera);
 		if (windowOutput.m_switchModel)
@@ -303,6 +304,10 @@ private:
 		if (keyPressed(entry::Key::KeyM, m_modelKeyDown) && m_modelPaths.size() > 1)
 		{
 			switchModel((m_modelIndex + 1) % m_modelPaths.size());
+		}
+		if (keyPressed(entry::Key::KeyR, m_rayKeyDown))
+		{
+			m_settings.rayMode = (m_settings.rayMode + 1) % int(RayMode::Count);
 		}
 		if (keyPressed(entry::Key::KeyE, m_emissiveKeyDown))
 		{
@@ -448,6 +453,7 @@ private:
 	bool m_tonemapKeyDown = false;
 	bool m_viewKeyDown = false;
 	bool m_emissiveKeyDown = false;
+	bool m_rayKeyDown = false;
 	bool m_screenshotKeyDown = false;
 	bool m_windowKeyDown = false;
 	bool m_bookmarkKeyDown[kMaxBookmarks] = {};

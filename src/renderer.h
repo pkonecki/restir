@@ -78,6 +78,16 @@ public:
 	// GI targets are the window size over this.
 	uint32_t giDivisor() const { return m_targetGiDivisor; }
 
+	// The current scene's BVH, for the settings window.
+	struct BvhStats
+	{
+		uint32_t m_triangles = 0;
+		uint32_t m_nodes = 0;
+		uint32_t m_depth = 0;
+		float m_buildMs = 0.0f;
+	};
+	const BvhStats& bvhStats() const { return m_bvhStats; }
+
 private:
 	void destroyScene();
 	void setMaterial(uint32_t _material, bool _gbuffer);
@@ -91,6 +101,9 @@ private:
 	// Scene geometry and materials.
 	bgfx::VertexBufferHandle m_vbh = BGFX_INVALID_HANDLE;
 	bgfx::IndexBufferHandle m_ibh = BGFX_INVALID_HANDLE;
+	bgfx::VertexBufferHandle m_bvhBuffer = BGFX_INVALID_HANDLE; // see bvh.h
+	float m_bvhInfo[4] = {};                                     // u_bvhInfo, without the ray mode
+	BvhStats m_bvhStats;
 	std::vector<bgfx::TextureHandle> m_modelTextures;
 	std::vector<SceneMaterial> m_materials;
 	std::vector<SceneDraw> m_draws;
@@ -210,4 +223,5 @@ private:
 	bgfx::UniformHandle m_compositeOptionsUniform = BGFX_INVALID_HANDLE;
 	bgfx::UniformHandle m_emissiveSampler = BGFX_INVALID_HANDLE;
 	bgfx::UniformHandle m_shadingNormalSampler = BGFX_INVALID_HANDLE;
+	bgfx::UniformHandle m_bvhInfoUniform = BGFX_INVALID_HANDLE;
 };
