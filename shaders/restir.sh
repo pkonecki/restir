@@ -221,7 +221,7 @@ vec3 evaluateSecondaryDirect(vec2 _uv, vec3 _position, vec3 _normal)
 	float distanceSquared = max(dot(toLight, toLight), 0.01 * kSceneScale * kSceneScale);
 	float normalLight = max(dot(_normal, toLight * inversesqrt(distanceSquared)), 0.0);
 	return albedo * (u_lightColor.rgb / distanceSquared) * (normalLight / kPi)
-		* (normalLight > 0.0 ? lightVisibility(_position, _normal, 1) : 0.0);
+		* (normalLight > 0.0 ? lightVisibilityHard(_position, _normal) : 0.0);
 }
 
 // The same for a point that is not a visible surface, from its triangle.
@@ -231,7 +231,7 @@ vec3 evaluateWorldDirect(vec3 _albedo, vec3 _position, vec3 _normal)
 	float distanceSquared = max(dot(toLight, toLight), 0.01 * kSceneScale * kSceneScale);
 	float normalLight = max(dot(_normal, toLight * inversesqrt(distanceSquared)), 0.0);
 	return _albedo * (u_lightColor.rgb / distanceSquared) * (normalLight / kPi)
-		* (normalLight > 0.0 ? lightVisibility(_position, _normal, 1) : 0.0);
+		* (normalLight > 0.0 ? lightVisibilityHard(_position, _normal) : 0.0);
 }
 
 // Larger than any triangle id (+-(t + 1), t < 2^24).

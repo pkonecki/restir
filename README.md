@@ -225,7 +225,8 @@ local web build also packs Sponza if it has been fetched, and M switches to it.
 pull request: on Linux (GLSL and SPIR-V shaders), where it also renders the
 Cornell box for 30 frames under Xvfb with Mesa's software rasterizer and
 checks the frame is not blank (the frame is kept as an artifact); on
-Windows with MSVC (HLSL through fxc and dxc); and on macOS (Metal).
+Windows with MSVC (HLSL through fxc and dxc); and, when run by hand from
+the Actions tab, on macOS (Metal).
 
 `.github/workflows/pages.yml` runs these steps on every push and pull
 request, and deploys pushes to `main` to GitHub Pages. To enable the

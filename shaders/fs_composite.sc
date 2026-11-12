@@ -113,7 +113,7 @@ void main()
 	vec3 diffuse;
 	vec3 specular;
 	evaluateBrdf(normal, viewDirection, lightDirection, albedo, roughness, metallic, diffuse, specular);
-	float visibility = dot(normal, lightDirection) > 0.0 ? lightVisibility(position, surfaceNormal, 4) : 0.0;
+	float visibility = dot(normal, lightDirection) > 0.0 ? lightVisibilitySoft(position, surfaceNormal) : 0.0;
 	vec3 direct = (diffuse + specular) * (u_lightColor.rgb / distanceSquared) * visibility
 		+ texture2D(s_diDiffuse, v_texcoord0).rgb + texture2D(s_diSpecular, v_texcoord0).rgb;
 	// The GI target holds demodulated irradiance: multiply the diffuse albedo

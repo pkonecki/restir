@@ -41,14 +41,16 @@ jobs:
       - name: Build
         run: cmake --build build --target restir_gi --parallel "$(nproc)"
 
-      # A few frames of the Cornell box under Xvfb, OpenGL through llvmpipe,
-      # saved by the example's own --screenshot option. Catches shaders that
-      # compile but fail to link or validate at run time.
+      # A few frames of the Cornell box under Xvfb, through OpenGL on
+      # llvmpipe, saved by the example's own --screenshot option. Catches
+      # shaders that compile but fail to link or validate at run time. --gl:
+      # with Vulkan present, bgfx may pick Direct3D through DXVK, whose shaders
+      # a Linux build does not have.
       - name: Render a frame
         working-directory: build
         run: |
           xvfb-run -a -s "-screen 0 1280x720x24" \
-            timeout 300 ./restir_gi --no-ui --screenshot smoke --screenshot-frame 30
+            timeout 300 ./restir_gi --gl --no-ui --screenshot smoke --screenshot-frame 30
           test -f smoke.png
 
       - name: Check the frame is not blank
@@ -74,7 +76,11 @@ jobs:
       - name: Build
         run: cmake --build build --config Release --target restir_gi --parallel
 
+  # Manual only (Actions > Native builds > Run workflow): macOS runners were
+  # not available to this repository's account when this was added, and a
+  # job that never starts shows the whole run as cancelled.
   macos:
+    if: github.event_name == 'workflow_dispatch'
     runs-on: macos-14
     timeout-minutes: 60
     steps:
