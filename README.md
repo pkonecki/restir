@@ -90,8 +90,9 @@ A few more command line options help with repeatable comparisons (and
 restir_gi --camera 0,1,4.5,0,0.1 --no-ui --screenshot out --screenshot-frame 120
 ```
 
-`--camera x,y,z,yaw,pitch` starts from that view, `--no-ui` hides the
-settings window (F2 toggles it), and `--screenshot` (bgfx's own option)
+`--camera x,y,z,yaw,pitch` starts from that view, `--settings` applies a
+share string (the view and every setting, as the settings window shows it
+under **Views**), `--no-ui` hides the settings window (F2 toggles it), and `--screenshot` (bgfx's own option)
 saves `out.png` after the given frame and exits.
 
 The camera flies freely. Hold the left mouse button and drag to look around;
@@ -218,8 +219,20 @@ python3 -m http.server -d build-web 8080
 ```
 
 and open <http://localhost:8080/restir_gi.html>. The web build starts with
-the bundled Cornell box, since `--model` has no command line to come from. A
-local web build also packs Sponza if it has been fetched, and M switches to it.
+the bundled Cornell box. A local web build also packs Sponza if it has been
+fetched, and M switches to it. Other models load in two ways:
+
+- **Drop** a `.glb` file, or a `.gltf` with its buffers and textures (the
+  files, or the folder holding them), onto the page.
+- **`?model=URL`** in the address: the page downloads a `.glb`, or a
+  `.gltf` and the buffers and images it refers to by relative URI, before
+  starting. The server has to allow the page to fetch it (same origin, or
+  CORS).
+
+The page's address keeps the view and every setting in its hash (the share
+string the settings window shows under **Views**, which `--settings` also
+takes natively), updated as they change: copy the address to share exactly
+what you see.
 
 `.github/workflows/build.yml` builds the example natively on every push and
 pull request: on Linux (GLSL and SPIR-V shaders), where it also renders the

@@ -9,6 +9,7 @@
 	body { display: flex; flex-direction: column; align-items: center; justify-content: center; }
 	canvas { display: block; outline: none; max-width: 100%; }
 	#status { margin: 8px; min-height: 1.2em; text-align: center; }
+	body.dragging canvas { outline: 2px dashed #8ab4f8; outline-offset: -2px; }
 </style>
 </head>
 <body>
@@ -20,16 +21,134 @@
 	let failed = false;
 	const setStatus = (text) => { if (!failed) statusElement.textContent = text; };
 	const fail = (text) => { setStatus(text); failed = true; };
+	const hint = 'Drag to look, WASD to move. Drop a glTF model (.glb, or a .gltf with its files or folder) to load it. '
+		+ 'The address keeps the view and settings: copy it to share them.';
+
+	// The example's command line: the settings in the URL hash (the example
+	// keeps them up to date there), and a model from ?model=URL.
+	const pageArguments = [];
+	if (location.hash.length > 1) {
+		pageArguments.push('--settings', decodeURIComponent(location.hash.slice(1)));
+	}
+	const modelUrl = new URLSearchParams(location.search).get('model');
+
+	// Writes a file into the example's in-memory file system, creating the
+	// directories on the way.
+	const writeFile = (path, bytes) => {
+		const parts = path.split('/').filter((part) => part.length > 0);
+		let directory = '';
+		for (const part of parts.slice(0, -1)) {
+			directory += '/' + part;
+			try { Module.FS.mkdir(directory); } catch (error) { /* exists */ }
+		}
+		Module.FS.writeFile('/' + parts.join('/'), bytes);
+	};
+
+	// Fetches a model into /models: a .glb on its own, or a .gltf with the
+	// buffers and images it refers to by relative URI. Returns its path.
+	const fetchModel = async (url) => {
+		const name = new URL(url, location.href).pathname.split('/').pop() || 'model.glb';
+		const fetchBytes = async (address) => {
+			const response = await fetch(address);
+			if (!response.ok) {
+				throw new Error(address + ': ' + response.status + ' ' + response.statusText);
+			}
+			return new Uint8Array(await response.arrayBuffer());
+		};
+		const bytes = await fetchBytes(url);
+		writeFile('/models/' + name, bytes);
+		if (name.toLowerCase().endsWith('.gltf')) {
+			const gltf = JSON.parse(new TextDecoder().decode(bytes));
+			const uris = [...(gltf.buffers || []), ...(gltf.images || [])]
+				.map((entry) => entry.uri)
+				.filter((uri) => uri && !uri.startsWith('data:'));
+			await Promise.all(uris.map(async (uri) => {
+				writeFile('/models/' + decodeURIComponent(uri), await fetchBytes(new URL(uri, new URL(url, location.href)).href));
+			}));
+		}
+		return '/models/' + name;
+	};
 
 	var Module = {
 		canvas: document.getElementById('canvas'),
+		arguments: pageArguments,
 		// The renderer needs WebGPU, so do not start without it.
 		noInitialRun: !webgpuSupported,
-		setStatus: (text) => setStatus(text || 'Drag to orbit, wheel to zoom, B: bounces, S: shadows, D: denoiser.'),
+		preRun: [() => {
+			if (!modelUrl) {
+				return;
+			}
+			Module.addRunDependency('model');
+			setStatus('Downloading ' + modelUrl + '...');
+			fetchModel(modelUrl)
+				.then((path) => pageArguments.unshift('--model', path))
+				.catch((error) => console.error('Could not load the model: ' + error.message))
+				.finally(() => Module.removeRunDependency('model'));
+		}],
+		setStatus: (text) => setStatus(text || hint),
 		print: (text) => console.log(text),
 		printErr: (text) => console.error(text),
 		onAbort: () => fail('The renderer stopped with an error, see the browser console.'),
 	};
+
+	// Models dropped on the page: every file (folders included) goes under
+	// /dropped/<n>/, and the first .glb or .gltf among them is loaded.
+	let dropCount = 0;
+	const readEntries = (directory) => new Promise((resolve, reject) => {
+		const reader = directory.createReader();
+		const all = [];
+		const next = () => reader.readEntries((entries) => {
+			if (entries.length === 0) { resolve(all); return; }
+			all.push(...entries);
+			next();
+		}, reject);
+		next();
+	});
+	const collectFiles = async (entry, prefix, files) => {
+		if (entry.isFile) {
+			const file = await new Promise((resolve, reject) => entry.file(resolve, reject));
+			files.push({ path: prefix + file.name, file });
+		} else if (entry.isDirectory) {
+			for (const child of await readEntries(entry)) {
+				await collectFiles(child, prefix + entry.name + '/', files);
+			}
+		}
+	};
+	document.addEventListener('dragover', (event) => {
+		event.preventDefault();
+		document.body.classList.add('dragging');
+	});
+	document.addEventListener('dragleave', () => document.body.classList.remove('dragging'));
+	document.addEventListener('drop', async (event) => {
+		event.preventDefault();
+		document.body.classList.remove('dragging');
+		if (!Module.FS || !Module.ccall) {
+			return;
+		}
+		const files = [];
+		for (const item of [...event.dataTransfer.items]) {
+			const entry = item.webkitGetAsEntry ? item.webkitGetAsEntry() : null;
+			if (entry) {
+				await collectFiles(entry, '', files);
+			} else if (item.kind === 'file') {
+				const file = item.getAsFile();
+				files.push({ path: file.name, file });
+			}
+		}
+		const root = '/dropped/' + (++dropCount) + '/';
+		let model = null;
+		for (const { path, file } of files) {
+			writeFile(root + path, new Uint8Array(await file.arrayBuffer()));
+			if (!model && /\.(glb|gltf)$/i.test(path)) {
+				model = root + path;
+			}
+		}
+		if (model) {
+			Module.ccall('restirLoadModel', null, ['string'], [model]);
+		} else {
+			setStatus('No .glb or .gltf file among the dropped files.');
+		}
+	});
 
 	if (!webgpuSupported) {
 		fail('This browser does not support WebGPU, or the page is not served over HTTPS or from localhost.');

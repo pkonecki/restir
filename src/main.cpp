@@ -9,6 +9,7 @@
 #include "renderer.h"
 #include "scene.h"
 #include "settings.h"
+#include "share.h"
 #include "ui.h"
 
 #include "common.h"
@@ -17,6 +18,10 @@
 #include "imgui/imgui.h"
 
 #include <bx/commandline.h>
+
+#if BX_PLATFORM_EMSCRIPTEN
+#	include <emscripten.h>
+#endif
 #include <bx/timer.h>
 
 #include <algorithm>
@@ -28,6 +33,22 @@
 #include <stdexcept>
 #include <string>
 #include <vector>
+
+namespace
+{
+
+// Models the page asks to load (dropped on it, see web/shell.html), picked
+// up by the next frame.
+std::vector<std::string> s_requestedModels;
+
+} // namespace
+
+#if BX_PLATFORM_EMSCRIPTEN
+extern "C" EMSCRIPTEN_KEEPALIVE void restirLoadModel(const char* _path)
+{
+	s_requestedModels.push_back(_path);
+}
+#endif
 
 namespace
 {
@@ -108,6 +129,12 @@ public:
 		{
 			m_measureFrames = std::max(std::atoi(measureOption), 1);
 		}
+		// --settings applies a share string (as the settings window shows it,
+		// and as the web build keeps in its URL hash) once the model is loaded.
+		if (const char* settingsOption = commandLine.findOption("settings"))
+		{
+			m_startSettings = settingsOption;
+		}
 		// --no-ui starts with the settings window hidden (F2 toggles it).
 		m_showWindow = !commandLine.hasArg("no-ui");
 
@@ -142,6 +169,10 @@ public:
 		{
 			setCameraPose(*startPose);
 		}
+		if (!m_startSettings.empty())
+		{
+			applyShareString(m_startSettings);
+		}
 	}
 
 	int shutdown() override
@@ -175,6 +206,19 @@ public:
 			? 0.0f
 			: std::min(float(double(now - m_lastFrameTime) / double(bx::getHPFrequency())), 0.1f);
 		m_lastFrameTime = now;
+
+		// Models dropped on the page: add them to the list and show the latest.
+		for (const std::string& path : s_requestedModels)
+		{
+			auto found = std::find(m_modelPaths.begin(), m_modelPaths.end(), path);
+			if (found == m_modelPaths.end())
+			{
+				m_modelPaths.push_back(path);
+				found = m_modelPaths.end() - 1;
+			}
+			switchModel(std::size_t(found - m_modelPaths.begin()));
+		}
+		s_requestedModels.clear();
 
 		m_camera.update(m_mouseState, m_scene.m_radius);
 		updateKeyboardShortcuts();
@@ -211,12 +255,47 @@ public:
 			bgfx::requestScreenShot(BGFX_INVALID_HANDLE, makeScreenshotPath().c_str());
 		}
 
+		updatePageAddress();
+
 		bgfx::setMarker("Present");
 		m_renderer.frameSubmitted(bgfx::frame());
 		return updateMeasurement();
 	}
 
 private:
+	void applyShareString(const std::string& _text)
+	{
+		CameraPose pose = cameraPose();
+		bool hasPose = false;
+		if (!decodeShareString(_text, m_settings, pose, hasPose))
+		{
+			std::fprintf(stderr, "Ignoring settings that set nothing: %s\n", _text.c_str());
+			return;
+		}
+		if (hasPose)
+		{
+			setCameraPose(pose);
+		}
+	}
+
+	// The web build keeps the share string in the page's URL hash, so the
+	// address bar always holds a link to this view and these settings.
+	void updatePageAddress()
+	{
+#if BX_PLATFORM_EMSCRIPTEN
+		if (m_frameCount++ % 30 != 0)
+		{
+			return;
+		}
+		const std::string text = encodeShareString(m_settings, cameraPose());
+		if (text != m_pageAddress)
+		{
+			m_pageAddress = text;
+			EM_ASM({ history.replaceState(null, '', '#' + UTF8ToString($0)); }, text.c_str());
+		}
+#endif
+	}
+
 	// --measure: accumulate, settle, report, quit. False to quit.
 	bool updateMeasurement()
 	{
@@ -265,6 +344,7 @@ private:
 			m_bookmarks.get(model), m_bookmarks.error(), cameraPose(), screenshotResult,
 			m_renderer.bvhStats(), m_renderer.lightCount(), m_renderer.emissiveTriangleCount(),
 			m_renderer.referenceAccumulating(), m_renderer.referenceFrames(), m_renderer.referenceMetrics(),
+			encodeShareString(m_settings, cameraPose()),
 		};
 		const SettingsWindowOutput windowOutput = drawSettingsWindow(windowInput, m_settings, m_camera);
 		if (windowOutput.m_switchModel)
@@ -525,6 +605,9 @@ private:
 
 	CameraBookmarks m_bookmarks;
 	int m_measureFrames = 0;    // --measure
+	std::string m_startSettings; // --settings
+	std::string m_pageAddress;   // the share string last put in the web page's address
+	uint32_t m_frameCount = 0;
 	int m_measureSettled = 0;   // frames since the reference stopped, plus one
 	bool m_screenshotRequested = false;
 	bool m_showWindow = true;

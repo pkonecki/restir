@@ -57,6 +57,7 @@ struct SettingsWindowInput
 	bool m_referenceAccumulating;
 	uint32_t m_referenceFrames;
 	Renderer::ReferenceMetrics m_referenceMetrics;
+	std::string m_shareString; // the settings and the view (share.h)
 };
 
 // What the window asks the application to do.

@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <cfloat>
+#include <vector>
 
 namespace
 {
@@ -138,6 +139,11 @@ SettingsWindowOutput drawSettingsWindow(const SettingsWindowInput& _input, Setti
 		ImGui::SetNextItemWidth(-FLT_MIN);
 		ImGui::InputText("##pose", pose, sizeof(pose), ImGuiInputTextFlags_ReadOnly);
 		ImGui::SetItemTooltip("This view, as --camera takes it (x,y,z,yaw,pitch).");
+		std::vector<char> share(_input.m_shareString.begin(), _input.m_shareString.end());
+		share.push_back('\0');
+		ImGui::SetNextItemWidth(-FLT_MIN);
+		ImGui::InputText("##share", share.data(), share.size(), ImGuiInputTextFlags_ReadOnly);
+		ImGui::SetItemTooltip("This view and every setting, as --settings takes it (the web\nbuild keeps it in the page address, so the link reproduces it).");
 
 		ImGui::SeparatorText("Screenshot");
 		if (ImGui::Button("Save screenshot (P)"))

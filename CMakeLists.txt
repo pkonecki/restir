@@ -155,6 +155,8 @@ add_executable(restir_gi
 	src/scene.cpp
 	src/scene.h
 	src/settings.h
+	src/share.cpp
+	src/share.h
 	src/ui.cpp
 	src/ui.h
 	${RESTIR_SHADER_SOURCES}
@@ -181,6 +183,9 @@ if(EMSCRIPTEN)
 		"-sENVIRONMENT=web"
 		"--shell-file=${CMAKE_CURRENT_SOURCE_DIR}/web/shell.html"
 		"--pre-js=${CMAKE_CURRENT_SOURCE_DIR}/web/webgpu_workarounds.js"
+		# The page writes dropped or fetched models into the file system and
+		# asks the example to load them (web/shell.html).
+		"-sEXPORTED_RUNTIME_METHODS=['ccall','FS','addRunDependency','removeRunDependency']"
 		"--preload-file=${BGFX_SHADER_OUTPUT_DIR}@shaders"
 		"--exclude-file=*.sc.bin"
 		"--preload-file=${CMAKE_CURRENT_SOURCE_DIR}/assets@assets"
