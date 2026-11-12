@@ -5,6 +5,10 @@ using fastgltf (by default the bundled open-front Cornell box), then renders it
 with a deferred PBR pipeline and ReSTIR GI whose reservoirs are reused
 through a world-space hash grid, after Boissé, "World-Space Spatiotemporal
 Reservoir Reuse for Ray-Traced Global Illumination" (SIGGRAPH Asia 2021).
+Rays the depth buffer cannot answer are traced through a BVH of the scene;
+emissive surfaces and extra point lights are lit with ReSTIR DI; a sky,
+glossy reflections, TAA, exposure and tone mapping complete the image; and a
+reference renderer measures the bias the real-time shortcuts leave.
 
 The renderer needs compute shaders (Direct3D 11/12, Vulkan, OpenGL 4.3,
 Metal or WebGPU); OpenGL ES is not supported.
@@ -134,16 +138,20 @@ sections:
   since the depth buffer cannot tell that nothing lies off screen. It
   starts on for Sponza and models passed with `--model`, and off for the
   Cornell box, whose open front would let it flood the room.
-- **Rendering**: multiple bounces (B), shadows (H), the denoiser (N),
-  emissive lighting (E), and whether reservoirs are reused through the world-space hash grid or from
-  screen-space neighbourhoods (G).
+- **Rendering**: multiple bounces (B), shadows (H), the denoiser (N), TAA,
+  specular GI, emissive lighting (E), how emitters and extra lights are lit
+  (ReSTIR DI, or through GI only), how rays are traced (R: depth buffer, then
+  BVH, or either alone), whether reservoirs are reused through the
+  world-space hash grid or from screen-space neighbourhoods (G), and the two
+  optional clamps (see "Bias").
   The view (V cycles through them) shows the final image or a debug view:
-  direct light only, indirect light only, or the GI irradiance before the
-  albedo is multiplied in (tone mapped like the final image); or, as plain
-  colours, the G-buffer's base colour, normals, roughness and metallic,
-  emission and ambient occlusion, each
-  pixel's reservoir M and W and GI history length (heat maps), and the
-  world-space hash grid's cells. The tooltip says how to read each one.
+  direct light only, indirect light only, the GI irradiance before the
+  albedo is multiplied in, or indirect specular only (tone mapped like the
+  final image); or, as plain colours, the G-buffer's base colour, normals,
+  roughness and metallic, emission and ambient occlusion, each pixel's
+  reservoir M and W and GI history length (heat maps), the world-space hash
+  grid's cells, and where each reservoir's sample came from. The tooltip
+  says how to read each one.
   **TAA** (temporal anti-aliasing) renders each frame with a different
   sub-pixel offset and blends the frames: the history is reprojected from
   depth with last frame's unjittered camera, read with a Catmull-Rom filter,
@@ -509,6 +517,14 @@ demonstration, not an unbiased multi-bounce path tracer.
 - `src/camera.cpp`: the fly camera.
 - `src/ui.cpp`: the settings window and the timings it shows.
 - `src/settings.h`: the settings the window edits and the renderer reads.
+- `src/share.cpp`: the settings and view as a share string (`--settings`,
+  the web build's address).
+- `src/bookmarks.cpp`, `src/capture.cpp`: camera bookmarks, and PNG
+  screenshots through bgfx's callback.
+- `web/`: the web build's page (model loading, the address) and a WebGPU
+  workaround.
+- `.github/`: the native and web CI workflows, and the frame check the
+  Linux job runs.
 - `shaders/`: the bgfx shaders, described in the sections above.
 
 ## Visual Studio Code
