@@ -14,6 +14,9 @@
  *   receiver: xyz = receiver position, w = W (unbiased contribution weight)
  *   normal:   xyz = receiver normal
  *
+ * Emissive surfaces: a sample point on one adds its emitted radiance, so
+ * emitters that are on screen light the scene through the same reservoirs.
+ *
  * Multiple bounces: the denoised history times the albedo is the indirect
  * radiance leaving each visible surface. When a sample point is shaded, last
  * frame's value at that point is added to its direct radiance, so each frame
@@ -34,6 +37,7 @@ SAMPLER2D(s_depth, 2);
 SAMPLER2D(s_historyColor, 5);    // denoised (or raw) demodulated GI
 SAMPLER2D(s_historyNormal, 6);   // receiver normal
 SAMPLER2D(s_historyReceiver, 9); // receiver position + W
+SAMPLER2D(s_emissive, 14);       // rgb: emitted radiance (G-buffer)
 
 uniform mat4 u_sceneInvViewProj;
 uniform mat4 u_sceneViewProj;
@@ -42,7 +46,7 @@ uniform vec4 u_lightPosition;
 uniform vec4 u_lightColor;
 uniform vec4 u_frameInfo;  // x: frame index, y: history valid, z: origin bottom-left, w: multiple bounces
 uniform vec4 u_screenInfo; // xy: GI target size, zw: GI texel size
-uniform vec4 u_sceneInfo;  // x: scene scale (see main.cpp)
+uniform vec4 u_sceneInfo;  // x: scene scale (see renderer.cpp), y: emissive surfaces light the scene
 uniform vec4 u_restirOptions; // x: initial candidates, y: temporal taps, z: spatial taps, w: trace steps
 
 #define SHADOW_SAMPLER_STAGE 7
@@ -54,7 +58,7 @@ uniform vec4 u_restirOptions; // x: initial candidates, y: temporal taps, z: spa
 #define GRID_ENTRY_STAGE    13
 #include "hashgrid.sh"
 
-// Sample counts, set from the settings window (see main.cpp).
+// Sample counts, set from the settings window (see settings.h).
 #define kInitialCandidates int(u_restirOptions.x)
 #define kTemporalTaps      int(u_restirOptions.y)
 #define kSpatialTaps       int(u_restirOptions.z)
@@ -346,7 +350,8 @@ bool traceScreenSpaceRay(
 
 // Evaluates the integrand f = (albedo / pi) * Lo(sample -> receiver) * cos
 // for a sample point, re-shading it from the current G-buffer. Lo is the
-// direct radiance plus, with multiple bounces, last frame's indirect radiance.
+// direct radiance plus its emission and, with multiple bounces, last frame's
+// indirect radiance.
 // Returns false when the point is no longer a visible surface, in which case
 // the reservoir that carried it cannot be reused at all.
 bool evaluateSample(
@@ -398,7 +403,8 @@ bool evaluateSample(
 	}
 
 	vec3 radiance = evaluateSecondaryDirect(sampleUv, _samplePosition, _sampleNormal)
-		+ previousIndirect(_samplePosition, _sampleNormal, diffuseAlbedo(sampleUv));
+		+ previousIndirect(_samplePosition, _sampleNormal, diffuseAlbedo(sampleUv))
+		+ texture2DLod(s_emissive, sampleUv, 0.0).rgb * u_sceneInfo.y;
 	_contribution = _receiverAlbedo * radiance * (receiverCosine / kPi);
 	return true;
 }

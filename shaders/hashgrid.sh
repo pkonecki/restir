@@ -51,7 +51,7 @@ BUFFER_RW(b_gridEntries,   uint, GRID_ENTRY_STAGE);
 uniform vec4 u_gridInfo;   // x: smallest cell size, y: world size of a GI pixel at unit distance, z: cell size in GI pixels, w: world-space reuse enabled
 uniform vec4 u_gridCamera; // xyz: camera position the cell sizes of this grid are chosen from
 
-// Keep in sync with main.cpp.
+// Keep in sync with renderer.cpp.
 #define kGridTableSize    65536u
 #define kGridTableMask    65535u
 #define kGridCellCapacity 32u

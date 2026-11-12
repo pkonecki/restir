@@ -11,13 +11,16 @@ SAMPLER2D(s_albedo, 0);
 SAMPLER2D(s_normal, 1);
 SAMPLER2D(s_depth, 2);
 SAMPLER2D(s_gi, 3);
+SAMPLER2D(s_emissive, 5);      // rgb: emitted radiance, a: ambient occlusion
+SAMPLER2D(s_shadingNormal, 6); // rgb: encoded normal, with the normal map
 
 uniform mat4 u_sceneInvViewProj;
 uniform vec4 u_lightPosition;
 uniform vec4 u_lightColor;
 uniform vec4 u_cameraPosition;
 uniform vec4 u_screenInfo; // xy: GI target size, zw: GI texel size
-uniform vec4 u_sceneInfo;  // x: scene scale (see main.cpp)
+uniform vec4 u_sceneInfo;  // x: scene scale (see renderer.cpp)
+uniform vec4 u_compositeOptions; // x: direct weight, y: indirect weight, z: 1 to multiply the albedo into the indirect light, w: emission weight
 
 #define SHADOW_SAMPLER_STAGE 4
 #include "shadow.sh"
@@ -94,7 +97,8 @@ void main()
 	float depth = texture2D(s_depth, v_texcoord0).x;
 	if (depth >= 0.99999)
 	{
-		gl_FragColor = vec4(0.125, 0.141, 0.169, 1.0);
+		// The background: the tone mapping pass gives it a fixed colour.
+		gl_FragColor = vec4_splat(0.0);
 		return;
 	}
 
@@ -103,7 +107,11 @@ void main()
 	vec3 albedo = albedoRoughness.rgb;
 	float roughness = max(albedoRoughness.a, 0.05);
 	float metallic = normalMetallic.a;
-	vec3 normal = normalize(normalMetallic.xyz * 2.0 - 1.0);
+	// The surface normal finds the GI texels of the same surface and offsets
+	// the shadow lookup; the normal-mapped one shades the direct light.
+	vec3 surfaceNormal = normalize(normalMetallic.xyz * 2.0 - 1.0);
+	vec3 normal = normalize(texture2D(s_shadingNormal, v_texcoord0).xyz * 2.0 - 1.0);
+	vec4 emissiveOcclusion = texture2D(s_emissive, v_texcoord0);
 	vec3 position = reconstructWorldPosition(v_texcoord0, depth);
 	vec3 viewDirection = normalize(u_cameraPosition.xyz - position);
 	vec3 toLight = u_lightPosition.xyz - position;
@@ -122,12 +130,17 @@ void main()
 		/ max(4.0 * normalLight * normalView, 0.001);
 	vec3 diffuseWeight = (vec3_splat(1.0) - fresnel) * (1.0 - metallic);
 	vec3 radiance = u_lightColor.rgb / distanceSquared;
-	float visibility = normalLight > 0.0 ? lightVisibility(position, normal, 4) : 0.0;
+	float visibility = normalLight > 0.0 ? lightVisibility(position, surfaceNormal, 4) : 0.0;
 	vec3 direct = (diffuseWeight * albedo / kPi + specular) * radiance * normalLight * visibility;
 	// The GI target holds demodulated irradiance: multiply the diffuse albedo
-	// back in.
-	vec3 indirect = upsampleIndirect(v_texcoord0, position, normal) * albedo * (1.0 - metallic);
-	vec3 color = direct + indirect;
-	color = color / (color + vec3_splat(1.0));
-	gl_FragColor = vec4(toGamma(vec4(color, 1.0)).rgb, 1.0);
+	// back in (the debug view of irradiance leaves it out), and the
+	// material's ambient occlusion, which glTF applies to indirect light only.
+	vec3 indirect = upsampleIndirect(v_texcoord0, position, surfaceNormal)
+		* (u_compositeOptions.z > 0.5 ? albedo * (1.0 - metallic) * emissiveOcclusion.a : vec3_splat(1.0));
+	// Scene-referred: exposure and tone mapping follow in fs_tonemap.sc.
+	gl_FragColor = vec4(
+		  direct * u_compositeOptions.x
+		+ indirect * u_compositeOptions.y
+		+ emissiveOcclusion.rgb * u_compositeOptions.w
+		, 1.0);
 }

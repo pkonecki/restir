@@ -59,20 +59,39 @@ restir_gi --model path/to/scene.gltf
 The camera starts looking at the centre of the scene's bounds, from outside
 the scene, except in Sponza, which is closed all around, where it starts
 inside the courtyard. Distances in the GI pass scale with the scene's size. A
-point light is placed in front of the scene's emissive surfaces, or near the
-top of the scene if it has none. Its intensity scales with the square of the
-scene's size. Primitives that are not triangle lists are skipped.
+point light is placed in front of the scene's untextured emissive surfaces
+(light panels), or near the top of the scene if it has none; for a closed
+object, such as a helmet, that is inside it, so press L to bring the light to
+the camera. Its intensity scales with the square of the scene's size. Primitives that are not triangle lists are skipped.
 
 Materials use their base colour, metallic and roughness factors, multiplied
-by their base colour and metallic-roughness textures (read with `TEXCOORD_0`,
-external files or embedded, decoded with bimg, with mipmaps built at load
-time). Alpha-masked materials, such as Sponza's plants, are cut out in both
-the G-buffer and the shadow map, and double-sided ones are lit from both
-sides. Normal, occlusion and emissive textures, texture transforms, glTF
-samplers (textures always repeat) and vertex colours are not used. A texture
+by their base colour and metallic-roughness textures and the vertex colours
+(`COLOR_0`). Textures are read with `TEXCOORD_0`, from external files or
+embedded, decoded with bimg, with mipmaps built at load time. Normal maps
+use the model's tangents, or tangents derived from the texture coordinates
+when it has none; they shade the direct light, while the GI passes keep the
+surface's own normal, so that bumps do not stop neighbouring receivers from
+sharing reservoirs. Occlusion textures dim the indirect light, as glTF
+specifies. Emission (factor, `KHR_materials_emissive_strength` and texture)
+is added to the image and, unless **Emissive lighting** (E) is off, lights
+the scene through GI, from the emitters that are on screen. Alpha-masked
+materials, such as Sponza's plants, are cut out in both the G-buffer and the
+shadow map, and double-sided ones are lit from both sides. Texture
+transforms, texture coordinate sets other than the first, and glTF samplers
+(textures always repeat) are not used. A texture
 that cannot be read is skipped with a warning; if it was a metallic-roughness
 texture, its material is treated as non-metallic, since models with one
 usually leave the metallic factor at its default of 1.
+
+A few more command line options help with repeatable comparisons:
+
+```sh
+restir_gi --camera 0,1,4.5,0,0.1 --no-ui --screenshot out --screenshot-frame 120
+```
+
+`--camera x,y,z,yaw,pitch` starts from that view, `--no-ui` hides the
+settings window (F2 toggles it), and `--screenshot` (bgfx's own option)
+saves `out.png` after the given frame and exits.
 
 The camera flies freely. Hold the left mouse button and drag to look around;
 use W, A, S and D to move forward, left, back and right, and Shift and Ctrl
@@ -83,16 +102,43 @@ camera disappear and the interior stays visible from any side.
 ### Settings window
 
 Every toggle and setting is in the **ReSTIR GI** window (Dear ImGui, as
-bundled with bgfx's example code); new ones belong there too. It has three
+bundled with bgfx's example code); new ones belong there too. It has these
 sections:
 
 - **Scene**: the model (M cycles through them) and the camera speed.
-- **Rendering**: multiple bounces (B), shadows (H), the denoiser (N), and
-  whether reservoirs are reused through the world-space hash grid or from
+  Below them:
+  - **Views**: saved camera views for the current model (**Save this view**;
+    keys 1 to 9 recall them), kept in `camera_bookmarks.txt` in the working
+    directory. The text field shows the current view as
+    `x,y,z,yaw,pitch`, the form `--camera` takes.
+  - **Screenshot** (P): saves a PNG in `screenshots/`, named after the time,
+    without the settings window unless **Hide this window** is unchecked. In
+    the web build the browser downloads it.
+- **Light**: the point light's position (drag the fields, or press L to move
+  it to the camera), colour and intensity (relative to the default, which
+  scales with the scene size), and an orbit that circles it around the
+  scene's vertical axis at a chosen radius and speed. ReSTIR re-shades every
+  reservoir's sample each frame, so the bounced light follows a moving light,
+  while the denoised history trails it by a few frames. Loading a model, or
+  **Reset light**, puts it back at the scene's default position.
+- **Rendering**: multiple bounces (B), shadows (H), the denoiser (N),
+  emissive lighting (E), and whether reservoirs are reused through the world-space hash grid or from
   screen-space neighbourhoods (G).
+  The view (V cycles through them) shows the final image or a debug view:
+  direct light only, indirect light only, or the GI irradiance before the
+  albedo is multiplied in (tone mapped like the final image); or, as plain
+  colours, the G-buffer's base colour, normals, roughness and metallic,
+  emission and ambient occlusion, each
+  pixel's reservoir M and W and GI history length (heat maps), and the
+  world-space hash grid's cells. The tooltip says how to read each one.
+  Below them, the exposure: the tone mapper (T cycles through AgX, the
+  default, fitted ACES, Khronos PBR Neutral, Reinhard and a plain clamp), the
+  exposure in stops, and auto exposure, which brings the log-average
+  luminance of the image to middle grey, easing in at the chosen speed (the
+  exposure slider then compensates on top of it).
 - **Performance**: frames per second with a frame time plot, and the GPU time
   of each group of passes (shadow map, G-buffer, hash grid, ReSTIR temporal
-  and spatial, denoiser, composite), measured with bgfx's per-view profiler.
+  and spatial, denoiser, composite, tone mapping), measured with bgfx's per-view profiler.
   They need GPU timer queries; WebGPU offers them only in browsers that expose
   `timestamp-query`. Below them are the levers that trade quality for speed:
 
@@ -245,7 +291,11 @@ With multiple bounces enabled, a sample point is shaded with its direct light
 plus the indirect light that left it in the previous frame, read back from
 the denoised history. Each frame thus adds one bounce, and the lighting
 converges to all bounces within a few frames. The composite pass upsamples the
-result with a geometry-aware filter and adds direct PBR lighting.
+result with a geometry-aware filter and adds direct PBR lighting, into a
+16-bit float target. Auto exposure (`shaders/cs_exposure.sc`, one compute
+group) averages the log luminance of 64x64 samples of it, and the tone
+mapping pass (`shaders/fs_tonemap.sc`, operators in `shaders/tonemap.sh`)
+applies the exposure and the tone mapper on the way to the window.
 
 Known limits: rays only see the depth buffer, so off-screen, occluded and
 back-facing geometry cannot contribute, which also caps the extra bounces. For
@@ -255,6 +305,19 @@ camera motion; shadow edges have a fixed softness rather than one that matches
 the size of the light; and screen-space visibility and the clamped
 reconnection Jacobian leave a bias of a few percent. This is a real-time
 demonstration, not an unbiased multi-bounce path tracer.
+
+## Source layout
+
+- `src/main.cpp`: the application: window, keyboard shortcuts, the list of
+  models, and the glue between the parts below.
+- `src/scene.cpp`: the glTF loader (geometry, materials, texture decoding)
+  and the framing of a scene (bounds, default light position).
+- `src/renderer.cpp`: every GPU resource and pass, from the shadow map to the
+  composite. `render` submits one frame.
+- `src/camera.cpp`: the fly camera.
+- `src/ui.cpp`: the settings window and the timings it shows.
+- `src/settings.h`: the settings the window edits and the renderer reads.
+- `shaders/`: the bgfx shaders, described in the sections above.
 
 ## Visual Studio Code
 

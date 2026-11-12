@@ -104,11 +104,12 @@ restir_compile_shaders(VERTEX
 restir_compile_shaders(FRAGMENT
 	SHADERS fs_gbuffer fs_composite fs_shadow fs_svgf_variance fs_svgf_atrous
 	PROFILES ${RESTIR_SHADER_PROFILES})
+# Fragment shaders that read storage buffers need the compute profiles too.
 restir_compile_shaders(FRAGMENT
-	SHADERS fs_restir_temporal fs_restir_spatial
+	SHADERS fs_restir_temporal fs_restir_spatial fs_tonemap fs_debug
 	PROFILES ${RESTIR_COMPUTE_PROFILES})
 restir_compile_shaders(COMPUTE
-	SHADERS cs_grid_clear cs_grid_insert
+	SHADERS cs_grid_clear cs_grid_insert cs_exposure
 	PROFILES ${RESTIR_COMPUTE_PROFILES})
 
 # The runtime looks for <name>.bin, not <name>.sc.bin.
@@ -131,6 +132,19 @@ file(GLOB RESTIR_SHADER_SOURCES CONFIGURE_DEPENDS
 
 add_executable(restir_gi
 	src/main.cpp
+	src/bookmarks.cpp
+	src/bookmarks.h
+	src/camera.cpp
+	src/camera.h
+	src/capture.cpp
+	src/capture.h
+	src/renderer.cpp
+	src/renderer.h
+	src/scene.cpp
+	src/scene.h
+	src/settings.h
+	src/ui.cpp
+	src/ui.h
 	${RESTIR_SHADER_SOURCES}
 	${BGFX_RUNTIME_SHADERS}
 )
