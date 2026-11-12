@@ -1,6 +1,7 @@
 #include "renderer.h"
 
 #include "bvh.h"
+#include "lights.h"
 
 #include "bgfx_utils.h"
 
@@ -76,6 +77,9 @@ float halton(uint32_t _index, uint32_t _base)
 	return result;
 }
 
+// Buffer stage of the light list in the DI passes (shaders/di.sh).
+constexpr uint8_t kLightStage = 14;
+
 // Cap on the M of every reused reservoir (kMaxHistory in shaders/restir.sh).
 constexpr int kMaxReusedHistory = 20;
 
@@ -96,7 +100,8 @@ void Renderer::init(const Settings& _settings)
 	{
 		kShadowViewBase + 0, kShadowViewBase + 1, kShadowViewBase + 2,
 		kShadowViewBase + 3, kShadowViewBase + 4, kShadowViewBase + 5,
-		kGeometryView, kGridClearView, kGridInsertView, kTemporalView, kSpatialView,
+		kGeometryView, kDiTemporalView, kDiSpatialView,
+		kGridClearView, kGridInsertView, kTemporalView, kSpatialView,
 		kDenoiseViewBase + 0, kDenoiseViewBase + 1, kDenoiseViewBase + 2,
 		kDenoiseViewBase + 3, kDenoiseViewBase + 4, kDenoiseViewBase + 5,
 		kCompositeView, kTaaView, kExposureView, kTonemapView, kUiView,
@@ -127,6 +132,8 @@ void Renderer::init(const Settings& _settings)
 	m_materialFactorsUniform = bgfx::createUniform("u_materialFactors", bgfx::UniformType::Vec4);
 	const uint8_t white[] = { 255, 255, 255, 255 };
 	m_whiteTexture = bgfx::createTexture2D(1, 1, false, 1, bgfx::TextureFormat::RGBA8, 0, bgfx::copy(white, sizeof(white)));
+	const uint8_t black[] = { 0, 0, 0, 0 };
+	m_blackTexture = bgfx::createTexture2D(1, 1, false, 1, bgfx::TextureFormat::RGBA8, 0, bgfx::copy(black, sizeof(black)));
 	const uint8_t flatNormal[] = { 128, 128, 255, 255 };
 	m_flatNormalTexture = bgfx::createTexture2D(1, 1, false, 1, bgfx::TextureFormat::RGBA8, 0, bgfx::copy(flatNormal, sizeof(flatNormal)));
 
@@ -158,6 +165,8 @@ void Renderer::init(const Settings& _settings)
 	m_exposureProgram = bgfx::createProgram(loadShader("cs_exposure"), true);
 	m_tonemapProgram = loadProgram("vs_fullscreen", "fs_tonemap");
 	m_taaProgram = loadProgram("vs_fullscreen", "fs_taa");
+	m_diTemporalProgram = loadProgram("vs_fullscreen", "fs_di_temporal");
+	m_diSpatialProgram = loadProgram("vs_fullscreen", "fs_di_spatial");
 	m_debugProgram = loadProgram("vs_fullscreen", "fs_debug");
 	m_lightPosition = bgfx::createUniform("u_lightPosition", bgfx::UniformType::Vec4);
 	m_lightColor = bgfx::createUniform("u_lightColor", bgfx::UniformType::Vec4);
@@ -199,6 +208,16 @@ void Renderer::init(const Settings& _settings)
 	m_taaHistorySampler = bgfx::createUniform("s_taaHistory", bgfx::UniformType::Sampler);
 	m_taaPreviousViewProjUniform = bgfx::createUniform("u_taaPreviousViewProj", bgfx::UniformType::Mat4);
 	m_taaInfoUniform = bgfx::createUniform("u_taaInfo", bgfx::UniformType::Vec4);
+	m_diInfoUniform = bgfx::createUniform("u_diInfo", bgfx::UniformType::Vec4);
+	m_diPreviousUniform = bgfx::createUniform("u_diPrevious", bgfx::UniformType::Vec4);
+	m_screenSizeUniform = bgfx::createUniform("u_screenSize", bgfx::UniformType::Vec4);
+	m_lightingInfoUniform = bgfx::createUniform("u_lightingInfo", bgfx::UniformType::Vec4);
+	m_previousSampleSampler = bgfx::createUniform("s_previousSample", bgfx::UniformType::Sampler);
+	m_previousReceiverSampler = bgfx::createUniform("s_previousReceiver", bgfx::UniformType::Sampler);
+	m_previousNormalSampler = bgfx::createUniform("s_previousNormal", bgfx::UniformType::Sampler);
+	m_surfaceLightSampler = bgfx::createUniform("s_surfaceLight", bgfx::UniformType::Sampler);
+	m_diDiffuseSampler = bgfx::createUniform("s_diDiffuse", bgfx::UniformType::Sampler);
+	m_diSpecularSampler = bgfx::createUniform("s_diSpecular", bgfx::UniformType::Sampler);
 	m_debugViewUniform = bgfx::createUniform("u_debugView", bgfx::UniformType::Vec4);
 	m_emissiveSampler = bgfx::createUniform("s_emissive", bgfx::UniformType::Sampler);
 	m_shadingNormalSampler = bgfx::createUniform("s_shadingNormal", bgfx::UniformType::Sampler);
@@ -254,6 +273,7 @@ void Renderer::shutdown()
 	destroyScene();
 	destroyIfValid(m_whiteTexture);
 	destroyIfValid(m_flatNormalTexture);
+	destroyIfValid(m_blackTexture);
 	destroyIfValid(m_fullscreenVbh);
 	destroyIfValid(m_fullscreenIbh);
 	destroyIfValid(m_exposureBuffer);
@@ -269,6 +289,7 @@ void Renderer::shutdown()
 		m_geometryProgram, m_temporalProgram, m_spatialProgram, m_compositeProgram, m_shadowProgram,
 		m_varianceProgram, m_atrousProgram, m_gridClearProgram, m_gridInsertProgram,
 		m_exposureProgram, m_tonemapProgram, m_debugProgram, m_taaProgram,
+		m_diTemporalProgram, m_diSpatialProgram,
 	};
 	for (bgfx::ProgramHandle& program : programs)
 	{
@@ -294,6 +315,9 @@ void Renderer::shutdown()
 		m_emissiveSampler, m_shadingNormalSampler, m_bvhInfoUniform,
 		m_skyZenithUniform, m_skyHorizonUniform, m_skyGroundUniform,
 		m_taaHistorySampler, m_taaPreviousViewProjUniform, m_taaInfoUniform,
+		m_diInfoUniform, m_diPreviousUniform, m_screenSizeUniform, m_lightingInfoUniform,
+		m_previousSampleSampler, m_previousReceiverSampler, m_previousNormalSampler,
+		m_surfaceLightSampler, m_diDiffuseSampler, m_diSpecularSampler,
 		m_hdrSampler, m_exposureAdaptUniform, m_tonemapUniform,
 		m_debugViewUniform, m_compositeOptionsUniform,
 	};
@@ -347,6 +371,8 @@ void Renderer::setScene(const SceneMesh& _mesh, const SceneInfo& _info)
 	m_bvhInfo[1] = float(bvh.m_materialOffset);
 	m_bvhInfo[2] = bgfx::isValid(m_bvhBuffer) ? float(bvh.m_nodeCount) : 0.0f;
 	m_bvhStats = { bvh.m_triangleCount, bvh.m_nodeCount, bvh.m_depth, float(buildMs) };
+	m_emitters = bvh.m_emitters;
+	m_lightListKey = {}; // rebuilt on the next frame
 
 	m_scene = _info;
 	m_historyValid = false;
@@ -357,6 +383,8 @@ void Renderer::setScene(const SceneMesh& _mesh, const SceneInfo& _info)
 void Renderer::destroyScene()
 {
 	destroyIfValid(m_bvhBuffer);
+	destroyIfValid(m_lightBuffer);
+	m_lightCount = 0;
 	destroyIfValid(m_vbh);
 	destroyIfValid(m_ibh);
 	for (bgfx::TextureHandle& texture : m_modelTextures)
@@ -521,10 +549,6 @@ void Renderer::render(const FrameInput& _input, const Settings& _settings)
 		bgfx::submit(kGeometryView, m_geometryProgram);
 	}
 
-	// This frame's reservoirs, shaded GI and hash grid are written at
-	// historyWrite; last frame's are read from m_historyRead.
-	const uint8_t historyWrite = uint8_t(1 - m_historyRead);
-
 	const float frameInfo[] =
 	{
 		float(m_frameNumber & 0xffffff)
@@ -532,6 +556,94 @@ void Renderer::render(const FrameInput& _input, const Settings& _settings)
 		, bgfx::getCaps()->originBottomLeft ? 1.0f : 0.0f
 		, _settings.multipleBounces ? 1.0f : 0.0f
 	};
+	const float bvhInfo[] = { m_bvhInfo[0], m_bvhInfo[1], m_bvhInfo[2], float(_settings.rayMode) };
+
+	// ReSTIR DI: the light list (emitters and extra point lights), at full
+	// resolution, before the GI passes, which take its diffuse light as the
+	// light their sample points reflect.
+	const bool restirDi = _settings.directLighting == int(DirectLighting::ReStirDi);
+	updateLightList(_settings, sceneScale * sceneScale);
+	const bool diActive = restirDi && m_lightCount > 0 && bvhInfo[2] > 0.0f;
+	const uint8_t diWrite = uint8_t(1 - m_diRead);
+	if (diActive)
+	{
+		const float diInfo[] =
+		{
+			float(m_lightCount),
+			float(_settings.diCandidates),
+			float(_settings.diSpatialTaps),
+			m_diValid ? 1.0f : 0.0f,
+		};
+		const float diPrevious[] = { m_previousEye.x, m_previousEye.y, m_previousEye.z, 0.0f };
+		const float screenSize[] = { float(width), float(height), 1.0f / float(width), 1.0f / float(height) };
+		const auto setDiInputs = [&]()
+		{
+			bgfx::setTexture(0, m_albedoSampler, m_gbufferAlbedo);
+			bgfx::setTexture(1, m_normalSampler, m_gbufferNormal);
+			bgfx::setTexture(2, m_depthSampler, m_gbufferDepth);
+			bgfx::setTexture(3, m_shadingNormalSampler, m_gbufferShadingNormal);
+			bgfx::setBuffer(kLightStage, m_lightBuffer, bgfx::Access::Read);
+			bgfx::setBuffer(kBvhStage, m_bvhBuffer, bgfx::Access::Read);
+			bgfx::setUniform(m_bvhInfoUniform, bvhInfo);
+			bgfx::setUniform(m_inverseViewProjection, inverseViewProjection);
+			bgfx::setUniform(m_cameraPosition, cameraPosition);
+			bgfx::setUniform(m_sceneInfoUniform, sceneInfo);
+			bgfx::setUniform(m_frameInfo, frameInfo);
+			bgfx::setUniform(m_diInfoUniform, diInfo);
+			setFullscreenGeometry();
+			bgfx::setState(BGFX_STATE_WRITE_RGB | BGFX_STATE_WRITE_A);
+		};
+
+		bgfx::setMarker("ReSTIR DI Temporal");
+		bgfx::setViewName(kDiTemporalView, "ReSTIR DI Temporal");
+		bgfx::setViewRect(kDiTemporalView, 0, 0, uint16_t(width), uint16_t(height));
+		bgfx::setViewFrameBuffer(kDiTemporalView, m_diReservoirFrameBuffers[diWrite]);
+		bgfx::setViewTransform(kDiTemporalView, nullptr, nullptr);
+		bgfx::setTexture(4, m_previousSampleSampler, m_diSample[m_diRead]);
+		bgfx::setTexture(5, m_previousReceiverSampler, m_diReceiver[m_diRead]);
+		bgfx::setTexture(6, m_previousNormalSampler, m_diNormal[m_diRead]);
+		bgfx::setUniform(m_previousViewProjection, m_previousViewProj);
+		bgfx::setUniform(m_diPreviousUniform, diPrevious);
+		setDiInputs();
+		bgfx::submit(kDiTemporalView, m_diTemporalProgram);
+
+		bgfx::setMarker("ReSTIR DI Spatial");
+		bgfx::setViewName(kDiSpatialView, "ReSTIR DI Spatial");
+		bgfx::setViewRect(kDiSpatialView, 0, 0, uint16_t(width), uint16_t(height));
+		bgfx::setViewFrameBuffer(kDiSpatialView, m_diShadeFrameBuffer);
+		bgfx::setViewTransform(kDiSpatialView, nullptr, nullptr);
+		bgfx::setTexture(4, m_reservoirSampleSampler, m_diSample[diWrite]);
+		bgfx::setTexture(5, m_reservoirReceiverSampler, m_diReceiver[diWrite]);
+		bgfx::setTexture(6, m_reservoirNormalSampler, m_diNormal[diWrite]);
+		bgfx::setUniform(m_screenSizeUniform, screenSize);
+		setDiInputs();
+		bgfx::submit(kDiSpatialView, m_diSpatialProgram);
+
+		m_diRead = diWrite;
+		m_diValid = true;
+	}
+	else
+	{
+		m_diValid = false;
+	}
+	const bgfx::TextureHandle diDiffuse = diActive ? m_diDiffuse : m_blackTexture;
+	const bgfx::TextureHandle diSpecular = diActive ? m_diSpecular : m_blackTexture;
+
+	// What the GI sample points send out besides the point light's light.
+	const bool emitters = _settings.emissiveLighting;
+	const bgfx::TextureHandle surfaceLight = restirDi ? diDiffuse : m_gbufferEmissive;
+	const float lightingInfo[] =
+	{
+		restirDi ? 1.0f : (emitters ? 1.0f : 0.0f),
+		restirDi ? 0.0f : (emitters ? 1.0f : 0.0f),
+		0.0f,
+		0.0f,
+	};
+
+	// This frame's reservoirs, shaded GI and hash grid are written at
+	// historyWrite; last frame's are read from m_historyRead.
+	const uint8_t historyWrite = uint8_t(1 - m_historyRead);
+
 	const float screenInfo[] =
 	{
 		float(giWidth), float(giHeight), 1.0f / float(giWidth), 1.0f / float(giHeight),
@@ -597,7 +709,6 @@ void Renderer::render(const FrameInput& _input, const Settings& _settings)
 		bgfx::setUniform(m_skyGroundUniform, skyGround.data());
 	};
 
-	const float bvhInfo[] = { m_bvhInfo[0], m_bvhInfo[1], m_bvhInfo[2], float(_settings.rayMode) };
 	const auto setGiPassInputs = [&]()
 	{
 		bgfx::setTexture(0, m_albedoSampler, m_gbufferAlbedo);
@@ -609,7 +720,8 @@ void Renderer::render(const FrameInput& _input, const Settings& _settings)
 		bgfx::setTexture(6, m_historyNormalSampler, m_historyNormal[m_historyRead]);
 		bgfx::setTexture(7, m_shadowSampler, m_shadowMap);
 		bgfx::setTexture(9, m_historyReceiverSampler, m_historyReceiver[m_historyRead]);
-		bgfx::setTexture(14, m_emissiveSampler, m_gbufferEmissive);
+		bgfx::setTexture(14, m_surfaceLightSampler, surfaceLight);
+		bgfx::setUniform(m_lightingInfoUniform, lightingInfo);
 		bgfx::setUniform(m_shadowViewProjUniform, shadowViewProj, 6);
 		bgfx::setUniform(m_shadowInfoUniform, shadowInfo);
 		bgfx::setUniform(m_shadowOptionsUniform, shadowOptions);
@@ -781,6 +893,8 @@ void Renderer::render(const FrameInput& _input, const Settings& _settings)
 		bgfx::setTexture(4, m_shadowSampler, m_shadowMap);
 		bgfx::setTexture(5, m_emissiveSampler, m_gbufferEmissive);
 		bgfx::setTexture(6, m_shadingNormalSampler, m_gbufferShadingNormal);
+		bgfx::setTexture(7, m_diDiffuseSampler, diDiffuse);
+		bgfx::setTexture(8, m_diSpecularSampler, diSpecular);
 		bgfx::setUniform(m_shadowViewProjUniform, shadowViewProj, 6);
 		bgfx::setUniform(m_shadowInfoUniform, shadowInfo);
 		bgfx::setUniform(m_shadowOptionsUniform, shadowOptions);
@@ -884,6 +998,47 @@ void Renderer::render(const FrameInput& _input, const Settings& _settings)
 	++m_frameNumber;
 }
 
+// Rebuilds the light list when what goes into it changed: the scene, the
+// emitters setting, or the extra lights.
+void Renderer::updateLightList(const Settings& _settings, float _intensityScale)
+{
+	LightListKey key;
+	key.m_emitters = _settings.emissiveLighting;
+	key.m_extraCount = _settings.light.extraLights;
+	key.m_extraIntensity = _settings.light.extraIntensity;
+	key.m_extraSeed = _settings.light.extraSeed;
+	key.m_intensityScale = _intensityScale;
+	key.m_valid = true;
+	if (key == m_lightListKey)
+	{
+		return;
+	}
+	m_lightListKey = key;
+
+	destroyIfValid(m_lightBuffer);
+	ExtraLights extra;
+	extra.m_count = key.m_extraCount;
+	extra.m_intensity = key.m_extraIntensity;
+	extra.m_seed = uint32_t(key.m_extraSeed);
+	static const std::vector<EmissiveTriangle> s_noEmitters;
+	const LightList list = buildLightList(key.m_emitters ? m_emitters : s_noEmitters
+		, extra, m_scene.m_boundsMin, m_scene.m_boundsMax, _intensityScale);
+	m_lightCount = list.m_count;
+	m_lightTriangles = list.m_triangles;
+	if (m_lightCount > 0)
+	{
+		bgfx::VertexLayout vec4Layout;
+		vec4Layout.begin().add(bgfx::Attrib::TexCoord0, 4, bgfx::AttribType::Float).end();
+		m_lightBuffer = bgfx::createVertexBuffer(
+			  bgfx::copy(list.m_data.data(), uint32_t(list.m_data.size() * sizeof(float)))
+			, vec4Layout
+			, BGFX_BUFFER_COMPUTE_READ
+			);
+	}
+	// Stored light indices refer to the old list.
+	m_diValid = false;
+}
+
 // Binds a material's textures (white where it has none) and parameters
 // for the next draw, in the G-buffer pass or (base colour only, for alpha
 // masks) the shadow pass.
@@ -930,6 +1085,9 @@ void Renderer::destroyRenderTargets()
 {
 	destroyIfValid(m_gbuffer);
 	destroyIfValid(m_hdrFrameBuffer);
+	destroyIfValid(m_diReservoirFrameBuffers[0]);
+	destroyIfValid(m_diReservoirFrameBuffers[1]);
+	destroyIfValid(m_diShadeFrameBuffer);
 	destroyIfValid(m_taaFrameBuffers[0]);
 	destroyIfValid(m_taaFrameBuffers[1]);
 	for (uint8_t idx = 0; idx < 2; ++idx)
@@ -1027,6 +1185,22 @@ void Renderer::createRenderTargets(uint32_t _width, uint32_t _height, const Sett
 	m_hdrTexture = createTarget(_width, _height, bgfx::TextureFormat::RGBA16F);
 	m_hdrFrameBuffer = bgfx::createFrameBuffer(1, &m_hdrTexture, true);
 
+	// ReSTIR DI reservoirs (per frame parity) and its shaded output, at full
+	// resolution.
+	for (uint8_t idx = 0; idx < 2; ++idx)
+	{
+		m_diSample[idx] = createTarget(_width, _height, bgfx::TextureFormat::RGBA32F);
+		m_diReceiver[idx] = createTarget(_width, _height, bgfx::TextureFormat::RGBA32F);
+		m_diNormal[idx] = createTarget(_width, _height, bgfx::TextureFormat::RGBA16F);
+		const bgfx::TextureHandle reservoirTextures[] = { m_diSample[idx], m_diReceiver[idx], m_diNormal[idx] };
+		m_diReservoirFrameBuffers[idx] = bgfx::createFrameBuffer(BX_COUNTOF(reservoirTextures), reservoirTextures, true);
+	}
+	m_diDiffuse = createTarget(_width, _height, bgfx::TextureFormat::RGBA16F);
+	m_diSpecular = createTarget(_width, _height, bgfx::TextureFormat::RGBA16F);
+	const bgfx::TextureHandle diShadeTextures[] = { m_diDiffuse, m_diSpecular };
+	m_diShadeFrameBuffer = bgfx::createFrameBuffer(BX_COUNTOF(diShadeTextures), diShadeTextures, true);
+	m_diValid = false;
+
 	// TAA history, read with bilinear filtering.
 	for (uint8_t idx = 0; idx < 2; ++idx)
 	{
@@ -1071,6 +1245,8 @@ void Renderer::createRenderTargets(uint32_t _width, uint32_t _height, const Sett
 
 	if (!bgfx::isValid(m_gbuffer) || !bgfx::isValid(m_hdrFrameBuffer)
 	||  !bgfx::isValid(m_taaFrameBuffers[0]) || !bgfx::isValid(m_taaFrameBuffers[1])
+	||  !bgfx::isValid(m_diReservoirFrameBuffers[0]) || !bgfx::isValid(m_diReservoirFrameBuffers[1])
+	||  !bgfx::isValid(m_diShadeFrameBuffer)
 	||  !bgfx::isValid(m_reservoirFrameBuffers[0]) || !bgfx::isValid(m_reservoirFrameBuffers[1])
 	||  !bgfx::isValid(m_shadeFrameBuffers[0]) || !bgfx::isValid(m_shadeFrameBuffers[1])
 	||  !bgfx::isValid(m_filteredHistoryFrameBuffers[0]) || !bgfx::isValid(m_filteredHistoryFrameBuffers[1])

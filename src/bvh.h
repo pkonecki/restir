@@ -21,8 +21,18 @@
 #include <cstdint>
 #include <vector>
 
+// A triangle whose material emits light, for the direct lighting (see
+// lights.h). Its index is its place in the BVH's triangle order.
+struct EmissiveTriangle
+{
+	uint32_t m_triangle = 0;
+	float m_vertices[3][3] = {};
+	float m_emission[3] = {};
+};
+
 struct SceneBvh
 {
+	std::vector<EmissiveTriangle> m_emitters;
 	std::vector<float> m_data; // 4 floats per vec4
 	uint32_t m_nodeCount = 0;
 	uint32_t m_triangleCount = 0;

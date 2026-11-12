@@ -52,7 +52,7 @@ SAMPLER2D(s_depth, 2);
 SAMPLER2D(s_historyColor, 5);    // denoised (or raw) demodulated GI
 SAMPLER2D(s_historyNormal, 6);   // receiver normal
 SAMPLER2D(s_historyReceiver, 9); // receiver position + W
-SAMPLER2D(s_emissive, 14);       // rgb: emitted radiance (G-buffer)
+SAMPLER2D(s_surfaceLight, 14);   // rgb: light visible surfaces send out besides the point light's (see u_lightingInfo)
 
 uniform mat4 u_sceneInvViewProj;
 uniform mat4 u_sceneViewProj;
@@ -61,7 +61,13 @@ uniform vec4 u_lightPosition;
 uniform vec4 u_lightColor;
 uniform vec4 u_frameInfo;  // x: frame index, y: history valid, z: origin bottom-left, w: multiple bounces
 uniform vec4 u_screenInfo; // xy: GI target size, zw: GI texel size
-uniform vec4 u_sceneInfo;  // x: scene scale (see renderer.cpp), y: emissive surfaces light the scene, z: Jacobian clamp, w: outlier clamp
+uniform vec4 u_sceneInfo;  // x: scene scale (see renderer.cpp), z: Jacobian clamp, w: outlier clamp
+// How emitters and the light list reach the GI. x scales s_surfaceLight,
+// which holds either the G-buffer's emission (emitters lit through GI only)
+// or the diffuse light from ReSTIR DI (then emission is direct light, which
+// DI already counts, and GI adds its bounces). y scales the emission of
+// off-screen triangles, which only counts in the first case.
+uniform vec4 u_lightingInfo;
 uniform vec4 u_restirOptions; // x: initial candidates, y: temporal taps, z: spatial taps, w: trace steps
 
 #define SHADOW_SAMPLER_STAGE 7
@@ -473,10 +479,10 @@ bool evaluateSample(
 	vec3 radiance = visibleSurface
 		? evaluateSecondaryDirect(sampleUv, _samplePosition, _sampleNormal)
 			+ previousIndirect(_samplePosition, _sampleNormal, diffuseAlbedo(sampleUv))
-			+ texture2DLod(s_emissive, sampleUv, 0.0).rgb * u_sceneInfo.y
+			+ texture2DLod(s_surfaceLight, sampleUv, 0.0).rgb * u_lightingInfo.x
 		: evaluateWorldDirect(bvhTriangleAlbedo(triangleIndex), _samplePosition, _sampleNormal)
 			+ previousIndirect(_samplePosition, _sampleNormal, bvhTriangleAlbedo(triangleIndex))
-			+ bvhTriangleEmission(triangleIndex) * u_sceneInfo.y;
+			+ bvhTriangleEmission(triangleIndex) * u_lightingInfo.y;
 	_contribution = _receiverAlbedo * radiance * (receiverCosine / kPi);
 	return true;
 }

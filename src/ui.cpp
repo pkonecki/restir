@@ -182,6 +182,22 @@ SettingsWindowOutput drawSettingsWindow(const SettingsWindowInput& _input, Setti
 			ImGui::SliderFloat("Orbit radius", &light.orbitRadius, 0.0f, 1.0f, "%.2f scene radii", sliderFlags);
 			ImGui::SliderFloat("Orbit speed", &light.orbitSpeed, -2.0f, 2.0f, "%.2f rad/s", sliderFlags);
 		}
+
+		ImGui::SeparatorText("Extra lights");
+		ImGui::BeginDisabled(_settings.directLighting != int(DirectLighting::ReStirDi));
+		ImGui::SliderInt("Count", &light.extraLights, 0, 1024, "%d", sliderFlags | ImGuiSliderFlags_Logarithmic);
+		ImGui::SetItemTooltip("Coloured point lights scattered through the scene, sampled with\nReSTIR DI and shadowed through the BVH (the main light keeps its\nshadow map). The light list holds %u lights now, %u of them\nemissive triangles.", _input.m_lightCount, _input.m_emissiveTriangles);
+		if (light.extraLights > 0)
+		{
+			ImGui::SliderFloat("Each", &light.extraIntensity, 0.01f, 10.0f, "x%.2f", sliderFlags | ImGuiSliderFlags_Logarithmic);
+			ImGui::SetItemTooltip("Intensity of each extra light, relative to the main light's default.");
+			ImGui::SameLine();
+			if (ImGui::Button("Scatter again"))
+			{
+				++light.extraSeed;
+			}
+		}
+		ImGui::EndDisabled();
 	}
 
 	if (ImGui::CollapsingHeader("Sky", ImGuiTreeNodeFlags_DefaultOpen))
@@ -215,7 +231,9 @@ SettingsWindowOutput drawSettingsWindow(const SettingsWindowInput& _input, Setti
 		ImGui::Checkbox("TAA", &_settings.taa);
 		ImGui::SetItemTooltip("Temporal anti-aliasing: each frame is rendered with a different\nsub-pixel offset, and the frames are blended over time.");
 		ImGui::Checkbox("Emissive lighting (E)", &_settings.emissiveLighting);
-		ImGui::SetItemTooltip("Emissive surfaces light the scene through GI. Like all GI here,\nonly the emitters visible on screen contribute.");
+		ImGui::SetItemTooltip("Emissive surfaces light the scene.");
+		ImGui::Combo("Direct lighting", &_settings.directLighting, kDirectLightingNames, int(DirectLighting::Count));
+		ImGui::SetItemTooltip("How emitters and the extra lights light the scene.\nReSTIR DI: their light is sampled with reservoirs at full resolution\nand shadowed through the BVH; GI adds the light they bounce.\nThrough GI only: emitters light the scene only through the GI rays\nthat happen to hit them (noisier, and only emitters the rays reach).");
 		ImGui::Combo("Rays (R)", &_settings.rayMode, kRayModeNames, int(RayMode::Count));
 		ImGui::SetItemTooltip("Depth buffer: rays only find what is on screen.\nThen BVH: rays the depth buffer cannot answer (off screen, or\nbehind what it shows) are traced through the scene's BVH.\nBVH only: every ray and visibility test is.\n\nBVH: %u triangles, %u nodes, depth %u, built in %.0f ms."
 			, _input.m_bvhStats.m_triangles, _input.m_bvhStats.m_nodes, _input.m_bvhStats.m_depth, _input.m_bvhStats.m_buildMs);
@@ -324,6 +342,10 @@ SettingsWindowOutput drawSettingsWindow(const SettingsWindowInput& _input, Setti
 		ImGui::SetItemTooltip("Reservoirs reused from last frame (0: no temporal reuse).");
 		ImGui::SliderInt("Spatial taps", &_settings.spatialTaps, 0, 8, "%d", sliderFlags);
 		ImGui::SetItemTooltip("Reservoirs reused from this frame, each with a visibility ray\n(0: no spatial reuse; 0 and 0 give plain, unbiased Monte Carlo).");
+		ImGui::SliderInt("DI candidates", &_settings.diCandidates, 1, 32, "%d", sliderFlags);
+		ImGui::SetItemTooltip("Fresh light samples per pixel per frame in ReSTIR DI.");
+		ImGui::SliderInt("DI spatial taps", &_settings.diSpatialTaps, 0, 8, "%d", sliderFlags);
+		ImGui::SetItemTooltip("Neighbouring reservoirs reused in ReSTIR DI, each with a shadow ray.");
 		ImGui::SliderInt("Ray march steps", &_settings.traceSteps, 8, 64, "%d", sliderFlags);
 		ImGui::SetItemTooltip("Depth buffer steps per ray. Rays reach as far with fewer,\ncoarser steps, but miss thin geometry.");
 
@@ -337,6 +359,8 @@ SettingsWindowOutput drawSettingsWindow(const SettingsWindowInput& _input, Setti
 			_settings.temporalTaps = defaults.temporalTaps;
 			_settings.spatialTaps = defaults.spatialTaps;
 			_settings.traceSteps = defaults.traceSteps;
+			_settings.diCandidates = defaults.diCandidates;
+			_settings.diSpatialTaps = defaults.diSpatialTaps;
 			_settings.vsync = defaults.vsync;
 		}
 	}

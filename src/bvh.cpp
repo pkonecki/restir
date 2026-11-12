@@ -301,9 +301,26 @@ SceneBvh buildBvh(const SceneMesh& _mesh)
 		out += 8;
 	}
 
+	uint32_t bvhIndex = 0;
 	for (const uint32_t triangle : builder.m_order)
 	{
 		const uint32_t material = triangleMaterial[triangle];
+		const std::array<float, 3>& emission = materialEmission[material];
+		if (emission[0] > 0.0f || emission[1] > 0.0f || emission[2] > 0.0f)
+		{
+			EmissiveTriangle emitter;
+			emitter.m_triangle = bvhIndex;
+			for (int corner = 0; corner < 3; ++corner)
+			{
+				const bx::Vec3 position = vertex(_mesh.m_indices[triangle * 3 + corner]);
+				emitter.m_vertices[corner][0] = position.x;
+				emitter.m_vertices[corner][1] = position.y;
+				emitter.m_vertices[corner][2] = position.z;
+			}
+			std::memcpy(emitter.m_emission, emission.data(), sizeof(emitter.m_emission));
+			bvh.m_emitters.push_back(emitter);
+		}
+		++bvhIndex;
 		float baseColor[3] = { 0.0f, 0.0f, 0.0f };
 		float metallic = 0.0f;
 		for (int corner = 0; corner < 3; ++corner)

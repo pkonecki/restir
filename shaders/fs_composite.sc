@@ -13,6 +13,8 @@ SAMPLER2D(s_depth, 2);
 SAMPLER2D(s_gi, 3);
 SAMPLER2D(s_emissive, 5);      // rgb: emitted radiance, a: ambient occlusion
 SAMPLER2D(s_shadingNormal, 6); // rgb: encoded normal, with the normal map
+SAMPLER2D(s_diDiffuse, 7);     // direct light from the light list (fs_di_spatial.sc), diffuse part
+SAMPLER2D(s_diSpecular, 8);    // and specular part
 
 uniform mat4 u_sceneInvViewProj;
 uniform vec4 u_lightPosition;
@@ -29,26 +31,7 @@ uniform vec4 u_compositeOptions; // x: direct weight, y: indirect weight, z: 1 t
 #define kPi 3.14159265359
 #define kSceneScale u_sceneInfo.x
 
-float distributionGGX(vec3 _normal, vec3 _halfway, float _roughness)
-{
-	float alpha = _roughness * _roughness;
-	float alphaSquared = alpha * alpha;
-	float normalHalfway = max(dot(_normal, _halfway), 0.0);
-	float denominator = normalHalfway * normalHalfway * (alphaSquared - 1.0) + 1.0;
-	return alphaSquared / max(kPi * denominator * denominator, 0.0001);
-}
-
-float geometrySchlickGGX(float _normalDirection, float _roughness)
-{
-	float k = (_roughness + 1.0) * (_roughness + 1.0) / 8.0;
-	return _normalDirection / max(_normalDirection * (1.0 - k) + k, 0.0001);
-}
-
-vec3 fresnelSchlick(vec3 _halfway, vec3 _viewDirection, vec3 _f0)
-{
-	float cosine = max(dot(_halfway, _viewDirection), 0.0);
-	return _f0 + (1.0 - _f0) * pow(1.0 - cosine, 5.0);
-}
+#include "brdf.sh"
 
 vec3 reconstructWorldPosition(vec2 _uv, float _depth)
 {
@@ -121,21 +104,15 @@ void main()
 	vec3 toLight = u_lightPosition.xyz - position;
 	float distanceSquared = max(dot(toLight, toLight), 0.01 * kSceneScale * kSceneScale);
 	vec3 lightDirection = toLight * inversesqrt(distanceSquared);
-	vec3 halfwayDirection = normalize(viewDirection + lightDirection);
 
-	float normalLight = max(dot(normal, lightDirection), 0.0);
-	float normalView = max(dot(normal, viewDirection), 0.0);
-	vec3 f0 = mix(vec3_splat(0.04), albedo, metallic);
-	vec3 fresnel = fresnelSchlick(halfwayDirection, viewDirection, f0);
-	float distribution = distributionGGX(normal, halfwayDirection, roughness);
-	float geometry = geometrySchlickGGX(normalLight, roughness)
-		* geometrySchlickGGX(normalView, roughness);
-	vec3 specular = distribution * geometry * fresnel
-		/ max(4.0 * normalLight * normalView, 0.001);
-	vec3 diffuseWeight = (vec3_splat(1.0) - fresnel) * (1.0 - metallic);
-	vec3 radiance = u_lightColor.rgb / distanceSquared;
-	float visibility = normalLight > 0.0 ? lightVisibility(position, surfaceNormal, 4) : 0.0;
-	vec3 direct = (diffuseWeight * albedo / kPi + specular) * radiance * normalLight * visibility;
+	// The point light (shadow map), plus every other light through ReSTIR DI
+	// (zero when it is off).
+	vec3 diffuse;
+	vec3 specular;
+	evaluateBrdf(normal, viewDirection, lightDirection, albedo, roughness, metallic, diffuse, specular);
+	float visibility = dot(normal, lightDirection) > 0.0 ? lightVisibility(position, surfaceNormal, 4) : 0.0;
+	vec3 direct = (diffuse + specular) * (u_lightColor.rgb / distanceSquared) * visibility
+		+ texture2D(s_diDiffuse, v_texcoord0).rgb + texture2D(s_diSpecular, v_texcoord0).rgb;
 	// The GI target holds demodulated irradiance: multiply the diffuse albedo
 	// back in (the debug view of irradiance leaves it out), and the
 	// material's ambient occlusion, which glTF applies to indirect light only.

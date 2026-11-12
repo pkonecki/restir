@@ -71,6 +71,21 @@ constexpr const char* kRayModeNames[] =
 };
 static_assert(BX_COUNTOF(kRayModeNames) == size_t(RayMode::Count));
 
+// How emissive surfaces and the extra point lights light the scene.
+enum class DirectLighting : int
+{
+	ReStirDi, // sampled by ReSTIR DI with shadow rays; GI adds their bounces
+	GiOnly,   // emitters only, through the GI rays that happen to hit them
+	Count
+};
+
+constexpr const char* kDirectLightingNames[] =
+{
+	"ReSTIR DI",
+	"Through GI only",
+};
+static_assert(BX_COUNTOF(kDirectLightingNames) == size_t(DirectLighting::Count));
+
 // What the window shows. The first four are lighting, tone mapped like the
 // final image; the others are data, shown as display colours. Keep in sync
 // with shaders/fs_debug.sc.
@@ -153,6 +168,11 @@ struct LightSettings
 	bool orbit = false;       // circle around the vertical axis through the scene's centre, at the light's height
 	float orbitRadius = 0.35f; // in scene radii
 	float orbitSpeed = 0.5f;   // radians per second
+
+	// Extra point lights, scattered through the scene (ReSTIR DI only).
+	int extraLights = 0;
+	float extraIntensity = 0.3f; // each, relative to the main light's default
+	int extraSeed = 1;
 };
 
 // The defaults are what the example was tuned with.
@@ -170,6 +190,7 @@ struct Settings
 	bool taa = true; // temporal anti-aliasing
 	bool emissiveLighting = true; // emissive surfaces on screen light the scene through GI
 	int rayMode = int(RayMode::Hybrid);
+	int directLighting = int(DirectLighting::ReStirDi);
 
 	// Biased shortcuts in the reservoir reuse (README.md, "Bias").
 	bool clampJacobian = false; // cap the reconnection Jacobian at kJacobianClamp
@@ -191,4 +212,6 @@ struct Settings
 	int temporalTaps = 2;      // reservoirs reused from last frame
 	int spatialTaps = 4;       // reservoirs reused from this frame, one visibility ray each
 	int traceSteps = 32;       // depth buffer steps per ray, over the same distance
+	int diCandidates = 8;      // ReSTIR DI: fresh light samples per pixel per frame
+	int diSpatialTaps = 3;     // ReSTIR DI: reservoirs reused from neighbouring pixels
 };

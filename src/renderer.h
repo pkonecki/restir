@@ -4,6 +4,7 @@
 // GI temporal and spatial passes, SVGF-style denoiser and composite. It owns
 // every GPU resource except the settings window's.
 
+#include "bvh.h"
 #include "camera.h"
 #include "scene.h"
 #include "settings.h"
@@ -27,6 +28,8 @@ constexpr bgfx::ViewId kExposureView = 18;   // auto exposure (compute)
 constexpr bgfx::ViewId kTonemapView = 19;    // exposure and tone mapping, to the window
 constexpr bgfx::ViewId kTaaView = 20;        // temporal anti-aliasing, before the exposure
 constexpr bgfx::ViewId kUiView = 21;         // the settings window, drawn over everything
+constexpr bgfx::ViewId kDiTemporalView = 22; // ReSTIR DI, after the G-buffer
+constexpr bgfx::ViewId kDiSpatialView = 23;
 
 // GPU timings in the performance section: the views of each group of passes.
 struct PassGroup
@@ -40,6 +43,7 @@ constexpr PassGroup kPassGroups[] =
 {
 	{ "Shadow map",      kShadowViewBase,  kShadowViewBase + 5 },
 	{ "G-buffer",        kGeometryView,    kGeometryView },
+	{ "ReSTIR DI",       kDiTemporalView,  kDiSpatialView },
 	{ "Hash grid",       kGridClearView,   kGridInsertView },
 	{ "ReSTIR temporal", kTemporalView,    kTemporalView },
 	{ "ReSTIR spatial",  kSpatialView,     kSpatialView },
@@ -90,6 +94,10 @@ public:
 	};
 	const BvhStats& bvhStats() const { return m_bvhStats; }
 
+	// The light list ReSTIR DI samples, for the settings window.
+	uint32_t lightCount() const { return m_lightCount; }
+	uint32_t emissiveTriangleCount() const { return m_lightTriangles; }
+
 private:
 	void destroyScene();
 	void setMaterial(uint32_t _material, bool _gbuffer);
@@ -97,6 +105,7 @@ private:
 	void destroyRenderTargets();
 	void createRenderTargets(uint32_t _width, uint32_t _height, const Settings& _settings);
 	void createShadowMap(const Settings& _settings);
+	void updateLightList(const Settings& _settings, float _intensityScale);
 
 	SceneInfo m_scene;
 
@@ -106,6 +115,36 @@ private:
 	bgfx::VertexBufferHandle m_bvhBuffer = BGFX_INVALID_HANDLE; // see bvh.h
 	float m_bvhInfo[4] = {};                                     // u_bvhInfo, without the ray mode
 	BvhStats m_bvhStats;
+
+	// The light list ReSTIR DI samples (see lights.h), rebuilt when its key
+	// changes.
+	struct LightListKey
+	{
+		bool m_valid = false;
+		bool m_emitters = false;
+		int m_extraCount = 0;
+		float m_extraIntensity = 0.0f;
+		int m_extraSeed = 0;
+		float m_intensityScale = 0.0f;
+		bool operator==(const LightListKey&) const = default;
+	};
+	std::vector<EmissiveTriangle> m_emitters;
+	LightListKey m_lightListKey;
+	bgfx::VertexBufferHandle m_lightBuffer = BGFX_INVALID_HANDLE;
+	uint32_t m_lightCount = 0;
+	uint32_t m_lightTriangles = 0;
+
+	// ReSTIR DI reservoirs (per frame parity) and shaded output.
+	bgfx::TextureHandle m_diSample[2] = { BGFX_INVALID_HANDLE, BGFX_INVALID_HANDLE };
+	bgfx::TextureHandle m_diReceiver[2] = { BGFX_INVALID_HANDLE, BGFX_INVALID_HANDLE };
+	bgfx::TextureHandle m_diNormal[2] = { BGFX_INVALID_HANDLE, BGFX_INVALID_HANDLE };
+	bgfx::FrameBufferHandle m_diReservoirFrameBuffers[2] = { BGFX_INVALID_HANDLE, BGFX_INVALID_HANDLE };
+	bgfx::TextureHandle m_diDiffuse = BGFX_INVALID_HANDLE;
+	bgfx::TextureHandle m_diSpecular = BGFX_INVALID_HANDLE;
+	bgfx::FrameBufferHandle m_diShadeFrameBuffer = BGFX_INVALID_HANDLE;
+	uint8_t m_diRead = 0;
+	bool m_diValid = false;
+	bgfx::TextureHandle m_blackTexture = BGFX_INVALID_HANDLE;
 	std::vector<bgfx::TextureHandle> m_modelTextures;
 	std::vector<SceneMaterial> m_materials;
 	std::vector<SceneDraw> m_draws;
@@ -190,6 +229,8 @@ private:
 	bgfx::ProgramHandle m_tonemapProgram = BGFX_INVALID_HANDLE;
 	bgfx::ProgramHandle m_debugProgram = BGFX_INVALID_HANDLE;
 	bgfx::ProgramHandle m_taaProgram = BGFX_INVALID_HANDLE;
+	bgfx::ProgramHandle m_diTemporalProgram = BGFX_INVALID_HANDLE;
+	bgfx::ProgramHandle m_diSpatialProgram = BGFX_INVALID_HANDLE;
 
 	// Uniforms and samplers.
 	bgfx::UniformHandle m_lightPosition = BGFX_INVALID_HANDLE;
@@ -240,4 +281,14 @@ private:
 	bgfx::UniformHandle m_taaHistorySampler = BGFX_INVALID_HANDLE;
 	bgfx::UniformHandle m_taaPreviousViewProjUniform = BGFX_INVALID_HANDLE;
 	bgfx::UniformHandle m_taaInfoUniform = BGFX_INVALID_HANDLE;
+	bgfx::UniformHandle m_diInfoUniform = BGFX_INVALID_HANDLE;
+	bgfx::UniformHandle m_diPreviousUniform = BGFX_INVALID_HANDLE;
+	bgfx::UniformHandle m_screenSizeUniform = BGFX_INVALID_HANDLE;
+	bgfx::UniformHandle m_lightingInfoUniform = BGFX_INVALID_HANDLE;
+	bgfx::UniformHandle m_previousSampleSampler = BGFX_INVALID_HANDLE;
+	bgfx::UniformHandle m_previousReceiverSampler = BGFX_INVALID_HANDLE;
+	bgfx::UniformHandle m_previousNormalSampler = BGFX_INVALID_HANDLE;
+	bgfx::UniformHandle m_surfaceLightSampler = BGFX_INVALID_HANDLE;
+	bgfx::UniformHandle m_diDiffuseSampler = BGFX_INVALID_HANDLE;
+	bgfx::UniformHandle m_diSpecularSampler = BGFX_INVALID_HANDLE;
 };

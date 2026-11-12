@@ -812,6 +812,8 @@ SceneInfo describeScene(const SceneMesh& _mesh)
 	SceneInfo info;
 	info.m_center = bx::mul(bx::add(_mesh.m_boundsMin, _mesh.m_boundsMax), 0.5f);
 	info.m_radius = std::max(0.5f * bx::length(bx::sub(_mesh.m_boundsMax, _mesh.m_boundsMin)), 1e-3f);
+	info.m_boundsMin = _mesh.m_boundsMin;
+	info.m_boundsMax = _mesh.m_boundsMax;
 
 	// Kept away from the emitter so the inverse-square falloff does not blow
 	// out the surfaces right next to it.

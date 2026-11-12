@@ -52,6 +52,8 @@ struct SettingsWindowInput
 	CameraPose m_cameraPose;
 	const std::string& m_screenshotResult;
 	Renderer::BvhStats m_bvhStats;
+	uint32_t m_lightCount;
+	uint32_t m_emissiveTriangles;
 };
 
 // What the window asks the application to do.

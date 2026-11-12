@@ -218,7 +218,7 @@ private:
 			std::max(1u, m_width / giDivisor), std::max(1u, m_height / giDivisor),
 			m_scene.m_radius, m_scene.m_lightPosition,
 			m_bookmarks.get(model), m_bookmarks.error(), cameraPose(), screenshotResult,
-			m_renderer.bvhStats(),
+			m_renderer.bvhStats(), m_renderer.lightCount(), m_renderer.emissiveTriangleCount(),
 		};
 		const SettingsWindowOutput windowOutput = drawSettingsWindow(windowInput, m_settings, m_camera);
 		if (windowOutput.m_switchModel)

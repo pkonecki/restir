@@ -114,7 +114,7 @@ restir_compile_shaders(FRAGMENT
 	PROFILES ${RESTIR_SHADER_PROFILES})
 # Fragment shaders that read storage buffers need the compute profiles too.
 restir_compile_shaders(FRAGMENT
-	SHADERS fs_restir_temporal fs_restir_spatial fs_tonemap fs_debug
+	SHADERS fs_restir_temporal fs_restir_spatial fs_tonemap fs_debug fs_di_temporal fs_di_spatial
 	PROFILES ${RESTIR_COMPUTE_PROFILES})
 restir_compile_shaders(COMPUTE
 	SHADERS cs_grid_clear cs_grid_insert cs_exposure
@@ -146,6 +146,8 @@ add_executable(restir_gi
 	src/bvh.h
 	src/camera.cpp
 	src/camera.h
+	src/lights.cpp
+	src/lights.h
 	src/capture.cpp
 	src/capture.h
 	src/renderer.cpp

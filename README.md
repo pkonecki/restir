@@ -120,7 +120,9 @@ sections:
   scene's vertical axis at a chosen radius and speed. ReSTIR re-shades every
   reservoir's sample each frame, so the bounced light follows a moving light,
   while the denoised history trails it by a few frames. Loading a model, or
-  **Reset light**, puts it back at the scene's default position.
+  **Reset light**, puts it back at the scene's default position. Below it,
+  **Extra lights** scatters up to 1,024 coloured point lights through the
+  scene (seeded; **Scatter again** moves them), lit with ReSTIR DI (below).
 - **Sky** (K): a gradient from the ground through the horizon to the zenith
   colour, with an intensity. It shows behind the scene and lights it
   through the GI rays that the BVH confirms leave the scene, so it needs the
@@ -166,6 +168,8 @@ sections:
   | Rays per pixel | 2 | Fresh candidates traced each frame in the temporal pass. |
   | Temporal taps | 2 | Reservoirs reused from last frame, 0 to 4. |
   | Spatial taps | 4 | Reservoirs reused from this frame, each with a visibility ray, 0 to 8. Both at 0: no reuse, the unbiased reference (see "Bias"). |
+  | DI candidates | 8 | Fresh light samples per pixel per frame in ReSTIR DI. |
+  | DI spatial taps | 3 | Neighbouring DI reservoirs reused, each with a shadow ray. |
   | Ray march steps | 32 | Depth buffer steps per ray. Rays reach as far with fewer, coarser steps, but miss thin geometry. |
 
   **Reset to defaults** restores them.
@@ -313,6 +317,38 @@ group) averages the log luminance of 64x64 samples of it, and the tone
 mapping pass (`shaders/fs_tonemap.sc`, operators in `shaders/tonemap.sh`)
 applies the exposure and the tone mapper on the way to the window.
 
+### Direct light from many lights: ReSTIR DI
+
+The main point light keeps its shadow map. Everything else that emits, the
+scene's emissive triangles and the extra point lights, goes into a light
+list (`src/lights.cpp`), sampled with ReSTIR DI (Bitterli et al. 2020) at
+full resolution (`shaders/di.sh`):
+
+1. **Temporal pass** (`shaders/fs_di_temporal.sc`): 8 candidates pick a
+   light in proportion to its power and a point on it (uniform over a
+   triangle), resampled by their unshadowed contribution (diffuse plus GGX
+   specular at the pixel). The result is combined with the pixel's
+   reprojected reservoir from last frame with the generalized balance
+   heuristic of the two, whose targets are evaluated at each receiver (last
+   frame's from its stored position, normal and camera, with visibility).
+   The selected sample is tested with a shadow ray through the BVH and
+   stored.
+2. **Spatial pass** (`shaders/fs_di_spatial.sc`): combines the pixel's
+   reservoir with three from a 16-pixel disk that see the same surface,
+   with pairwise MIS on the full target functions (a light sample is the
+   same point for every pixel, so the shift's Jacobian is 1). It shades the
+   result into diffuse and specular radiance for the composite.
+
+Shadows are exact (BVH rays) and soft for area lights. The DI diffuse light
+is also what the GI sample points reflect, so emitters and extra lights
+bounce through GI without being counted twice (the GI's own emission term
+is turned off). **Direct lighting** (Rendering section) switches back to
+the old behaviour, where emitters only light the scene through the GI rays
+that happen to hit them. Emissive triangles emit from both sides, since
+models wind them inconsistently. The bundled Cornell box's light panel has
+an emissive factor of 1, which is dim next to the point light that stands in
+for it: turn the point light down to see the panel's light alone.
+
 ### Bias
 
 The reuse follows GRIS (Lin et al. 2022, "Generalized Resampled Importance
@@ -412,6 +448,8 @@ demonstration, not an unbiased multi-bounce path tracer.
   and the framing of a scene (bounds, default light position).
 - `src/renderer.cpp`: every GPU resource and pass, from the shadow map to the
   composite. `render` submits one frame.
+- `src/bvh.cpp`: the BVH for the rays the depth buffer cannot answer.
+- `src/lights.cpp`: the light list ReSTIR DI samples.
 - `src/camera.cpp`: the fly camera.
 - `src/ui.cpp`: the settings window and the timings it shows.
 - `src/settings.h`: the settings the window edits and the renderer reads.
