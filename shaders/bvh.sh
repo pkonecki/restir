@@ -93,7 +93,13 @@ int traceBvh(vec3 _origin, vec3 _direction, float _maxDistance, bool _anyHit, ou
 		);
 	vec3 inverseDirection = vec3_splat(1.0) / safeDirection;
 
+	// Initialised so the D3D compiler does not flag reads it cannot prove are
+	// preceded by writes.
 	int stack[kBvhStackSize];
+	for (int i = 0; i < kBvhStackSize; ++i)
+	{
+		stack[i] = 0;
+	}
 	int stackSize = 0;
 	int hit = -1;
 	int node = 0;

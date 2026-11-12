@@ -484,20 +484,28 @@ bool isVisible(vec3 _receiverPosition, vec3 _receiverNormal, vec3 _samplePositio
 	vec3 origin = _receiverPosition + _receiverNormal * kRayBias;
 	vec3 toSample = _samplePosition - origin;
 	float sampleDistance = length(toSample);
+	vec3 direction = toSample / max(sampleDistance, 0.0001);
+
+	// A single return: the D3D compiler reports a potentially uninitialised
+	// return value when an early return follows a loop-heavy call.
+	bool visible = true;
 	if (kRayMode == RAY_MODE_BVH && bvhAvailable())
 	{
-		float occluderDistance;
-		return traceBvh(origin, toSample / max(sampleDistance, 0.0001)
-			, sampleDistance - kRayBias, true, occluderDistance) < 0;
+		float occluderDistance = 0.0;
+		visible = traceBvh(origin, direction, sampleDistance - kRayBias, true, occluderDistance) < 0;
+	}
+	else
+	{
+		vec3 occluderPosition = vec3_splat(0.0);
+		visible = !traceScreenSpaceRay(
+			  origin
+			, direction
+			, sampleDistance * 0.95 - 0.05 * kSceneScale
+			, occluderPosition
+			);
 	}
 
-	vec3 occluderPosition;
-	return !traceScreenSpaceRay(
-		  origin
-		, toSample / max(sampleDistance, 0.0001)
-		, sampleDistance * 0.95 - 0.05 * kSceneScale
-		, occluderPosition
-		);
+	return visible;
 }
 
 // Reconnection Jacobian |d(omega here) / d(omega there)| for moving a sample
