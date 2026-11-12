@@ -76,6 +76,11 @@ set(BGFX_SHADER_OUTPUT_DIR "${CMAKE_CURRENT_BINARY_DIR}/shaders")
 set(BGFX_SHADER_INCLUDE_PATH "${bgfx.cmake_SOURCE_DIR}/bgfx/src")
 set(BGFX_SHADER_COMMON_INCLUDE_PATH "${bgfx.cmake_SOURCE_DIR}/bgfx/examples/common")
 
+# The shared shader code. bgfx_compile_shaders only makes a shader depend on
+# its .sc file, so every shader is also made to depend on all of these:
+# otherwise editing one leaves stale binaries until their .sc files change.
+file(GLOB RESTIR_SHADER_INCLUDES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/shaders/*.sh")
+
 # Compiles shaders/<name>.sc for each name, for the given profiles (bgfx's
 # defaults if none), and appends the outputs to RESTIR_SHADER_BINARIES.
 function(restir_compile_shaders type)
@@ -94,6 +99,9 @@ function(restir_compile_shaders type)
 		INCLUDE_DIRS "${BGFX_SHADER_COMMON_INCLUDE_PATH}"
 		${profiles}
 	)
+	foreach(output IN LISTS outputs)
+		add_custom_command(OUTPUT "${output}" APPEND DEPENDS ${RESTIR_SHADER_INCLUDES})
+	endforeach()
 	set(RESTIR_SHADER_BINARIES ${RESTIR_SHADER_BINARIES} ${outputs} PARENT_SCOPE)
 endfunction()
 

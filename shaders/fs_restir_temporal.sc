@@ -95,7 +95,17 @@ void main()
 		}
 
 		float target = luminance(contribution);
-		float sourcePdf = dot(normal, normalize(hitPosition - position)) / kPi;
+		// The density of the hit point, in solid angle at the receiver (the
+		// measure of the target function). The ray left from rayOrigin, a
+		// little above the receiver, so its cosine density there is converted:
+		// pdf(position) = pdf(rayOrigin) * d(position)^2 / d(rayOrigin)^2 (the
+		// cosine at the hit point cancels). Taking the cosine from the
+		// receiver instead overstates the density of nearby hits, darkening
+		// every fresh sample a little, most along corners.
+		vec3 fromReceiver = hitPosition - position;
+		vec3 fromOrigin = hitPosition - rayOrigin;
+		float sourcePdf = dot(normal, direction) / kPi
+			* dot(fromReceiver, fromReceiver) / max(dot(fromOrigin, fromOrigin), kMinDistanceSquared * 0.01);
 		if (target > 0.0 && sourcePdf > 0.0001)
 		{
 			updateReservoir(canonical, contribution, hitPosition, hitNormal, hitId, target, target / sourcePdf, randomSelect);

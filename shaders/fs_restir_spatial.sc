@@ -180,7 +180,12 @@ void main()
 	}
 
 	float combinedWeight = finishPairwiseMis(mis, position, normal, canonical, canonicalWeight, nextRandom(rng));
-	vec3 estimate = min(mis.combined.contribution * combinedWeight, vec3_splat(8.0));
+	vec3 estimate = mis.combined.contribution * combinedWeight;
+	if (kOutlierClamp > 0.0)
+	{
+		// Optional: rare bright samples are cut instead of averaged.
+		estimate = min(estimate, vec3_splat(kOutlierClamp));
+	}
 
 	// Demodulate: divide out the diffuse albedo. Where it is zero (metals,
 	// black) the estimate is zero too.

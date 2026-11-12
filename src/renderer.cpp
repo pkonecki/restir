@@ -377,7 +377,13 @@ void Renderer::render(const FrameInput& _input, const Settings& _settings)
 		light.color[2] * lightIntensityScale,
 		1.0f,
 	};
-	const float sceneInfo[] = { sceneScale, _settings.emissiveLighting ? 1.0f : 0.0f, 0.0f, 0.0f };
+	const float sceneInfo[] =
+	{
+		sceneScale,
+		_settings.emissiveLighting ? 1.0f : 0.0f,
+		_settings.clampJacobian ? kJacobianClamp : 0.0f,
+		_settings.clampOutliers ? kOutlierClamp : 0.0f,
+	};
 	const float cameraPosition[] = { eye.x, eye.y, eye.z, 1.0f };
 
 	const uint16_t giWidth = uint16_t(std::max(1u, width / m_targetGiDivisor));

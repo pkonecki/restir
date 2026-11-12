@@ -25,6 +25,10 @@ constexpr GiResolution kGiResolutions[] =
 // Point light shadows: texels per side of each of the six cube faces.
 constexpr uint16_t kShadowFaceSizes[] = { 256, 512, 1024, 2048 };
 
+// Values of the optional clamps in the reservoir reuse (see shaders/restir.sh).
+constexpr float kJacobianClamp = 10.0f;
+constexpr float kOutlierClamp = 8.0f;
+
 // Denoiser a-trous iterations, with tap spacings 1, 2, 4, 8, 16.
 constexpr int kMaxAtrousIterations = 5;
 
@@ -152,6 +156,10 @@ struct Settings
 	bool hideWindowInScreenshots = true;
 	bool emissiveLighting = true; // emissive surfaces on screen light the scene through GI
 	int rayMode = int(RayMode::Hybrid);
+
+	// Biased shortcuts in the reservoir reuse (README.md, "Bias").
+	bool clampJacobian = false; // cap the reconnection Jacobian at kJacobianClamp
+	bool clampOutliers = true;  // cap each pixel's estimate at kOutlierClamp (as the example always did)
 
 	int debugView = int(DebugView::Final);
 

@@ -55,7 +55,7 @@ uniform vec4 u_lightPosition;
 uniform vec4 u_lightColor;
 uniform vec4 u_frameInfo;  // x: frame index, y: history valid, z: origin bottom-left, w: multiple bounces
 uniform vec4 u_screenInfo; // xy: GI target size, zw: GI texel size
-uniform vec4 u_sceneInfo;  // x: scene scale (see renderer.cpp), y: emissive surfaces light the scene
+uniform vec4 u_sceneInfo;  // x: scene scale (see renderer.cpp), y: emissive surfaces light the scene, z: Jacobian clamp, w: outlier clamp
 uniform vec4 u_restirOptions; // x: initial candidates, y: temporal taps, z: spatial taps, w: trace steps
 
 #define SHADOW_SAMPLER_STAGE 7
@@ -89,7 +89,8 @@ uniform vec4 u_restirOptions; // x: initial candidates, y: temporal taps, z: spa
 #define kSkyDepth 0.99999
 #define kMaxHistory 20.0       // cap on the M of every reused reservoir
 #define kSpatialRadius 12.0    // screen-space reuse only, in GI texels
-#define kMaxJacobian 10.0
+#define kJacobianClamp u_sceneInfo.z // 0: unclamped (unbiased), else the largest reconnection Jacobian
+#define kOutlierClamp u_sceneInfo.w  // 0: none, else the largest estimate the spatial pass hands on
 #define kRayBias (0.02 * kSceneScale)          // origin offset along the normal
 #define kSurfaceBias (0.01 * kSceneScale)      // depth a ray must sink below a surface to count as behind it
 #define kMaxRayDistance (3.6 * kSceneScale)
@@ -511,6 +512,12 @@ bool isVisible(vec3 _receiverPosition, vec3 _receiverNormal, vec3 _samplePositio
 // Reconnection Jacobian |d(omega here) / d(omega there)| for moving a sample
 // point from the receiver it was found at to this one. Zero if the sample does
 // not face the original receiver.
+//
+// It needs no clamp to stay stable: the pairwise MIS weight of a shifted
+// sample (below) falls with the geometry term at the receiver it came from
+// as fast as the Jacobian grows, so their product stays bounded. Clamping it
+// (optional, for comparison) darkens wherever samples are reused across
+// large changes in distance or angle, such as near corners.
 float reconnectionJacobian(vec3 _here, vec3 _there, vec3 _samplePosition, vec3 _sampleNormal)
 {
 	vec3 toHere = _here - _samplePosition;
@@ -524,7 +531,8 @@ float reconnectionJacobian(vec3 _here, vec3 _there, vec3 _samplePosition, vec3 _
 		return 0.0;
 	}
 
-	return clamp((cosineHere / cosineThere) * (thereSquared / hereSquared), 0.0, kMaxJacobian);
+	float jacobian = max((cosineHere / cosineThere) * (thereSquared / hereSquared), 0.0);
+	return kJacobianClamp > 0.0 ? min(jacobian, kJacobianClamp) : jacobian;
 }
 
 struct Reservoir
@@ -630,8 +638,10 @@ float reuseRadius(vec3 _position)
 }
 
 /*
- * Pairwise MIS (Bitterli 2022, Wyman et al. 2023) between a canonical
- * reservoir, found at this receiver, and k reservoirs of other receivers.
+ * Pairwise MIS (Bitterli 2022, Wyman et al. 2023), the pairwise form of the
+ * generalized balance heuristic of GRIS (Lin et al. 2022, "Generalized
+ * Resampled Importance Sampling"), between a canonical reservoir, found at
+ * this receiver, and k reservoirs of other receivers.
  * Each neighbour forms a pair with the canonical reservoir, which takes
  * confidence M_c / k in every pair. With lambda_i = (M_i + M_c/k) / M_total
  * the MIS weights are
@@ -649,7 +659,14 @@ float reuseRadius(vec3 _position)
  *
  * Weights are accumulated without the 1 / M_total, which is applied when
  * computing W. A tap that found no usable reservoir is a technique with
- * M_i = 0, which hands its pair share to the canonical reservoir.
+ * M_i = 0, which hands its pair share to the canonical reservoir. With no
+ * taps at all, the canonical reservoir is used as it is.
+ *
+ * The confidences M are capped at kMaxHistory. GRIS allows any confidence
+ * weights, as long as the MIS weights sum to one, so the cap only trades how
+ * much the history counts against how fast it adapts; it adds no bias.
+ * What does: the optional Jacobian and outlier clamps, screen-space
+ * visibility, and samples that can no longer be shaded (README.md).
  *
  * Neighbour samples are shifted to this receiver without a visibility test:
  * wherever they are occluded the integrand is zero, so the weights there do
@@ -681,13 +698,14 @@ PairwiseMis beginPairwiseMis(
 	mis.combined = emptyReservoir();
 	mis.canonicalPosition = _canonical.position;
 	mis.canonicalNormal = _canonical.normal;
-	mis.pairCanonical = _canonicalCount / float(_taps);
+	mis.pairCanonical = _canonicalCount / float(max(_taps, 1));
 	mis.totalCount = _canonicalCount;
 	mis.hasCanonical = _canonical.target > 0.000001;
 	mis.canonicalGeometry = mis.hasCanonical
 		? geometryTerm(_position, _normal, _canonical.position, _canonical.normal)
 		: 0.0;
-	mis.canonicalShare = 0.0;
+	// Without neighbours, the canonical sample takes the whole weight.
+	mis.canonicalShare = _taps > 0 ? 0.0 : _canonicalCount;
 	mis.neighbourSelected = false;
 	return mis;
 }

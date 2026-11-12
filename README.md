@@ -149,8 +149,8 @@ sections:
   | Shadow map face | 512 | Texels per side of each of the six cube faces, 256 to 2048. |
   | Denoiser iterations | 5 | A-trous passes, 1 to 5; each doubles the filter radius. |
   | Rays per pixel | 2 | Fresh candidates traced each frame in the temporal pass. |
-  | Temporal taps | 2 | Reservoirs reused from last frame. |
-  | Spatial taps | 4 | Reservoirs reused from this frame, each with a visibility ray. |
+  | Temporal taps | 2 | Reservoirs reused from last frame, 0 to 4. |
+  | Spatial taps | 4 | Reservoirs reused from this frame, each with a visibility ray, 0 to 8. Both at 0: no reuse, the unbiased reference (see "Bias"). |
   | Ray march steps | 32 | Depth buffer steps per ray. Rays reach as far with fewer, coarser steps, but miss thin geometry. |
 
   **Reset to defaults** restores them.
@@ -262,7 +262,7 @@ are the defaults; the settings window changes them):
    answer through the scene's BVH (below), and resamples the hits into a
    reservoir. It then combines that reservoir, using pairwise MIS and
    the reconnection Jacobian, with two reservoirs picked at random from last
-   frame's grid cell around the receiver (M capped at 20). This needs no
+   frame's grid cell around the receiver (M capped at 20; see "Bias"). This needs no
    reprojection: a surface seen anywhere on screen last frame contributes if
    it lies in this receiver's cell. A sample taken over from another receiver
    is tested for visibility before the result is stored as this frame's
@@ -297,6 +297,53 @@ result with a geometry-aware filter and adds direct PBR lighting, into a
 group) averages the log luminance of 64x64 samples of it, and the tone
 mapping pass (`shaders/fs_tonemap.sc`, operators in `shaders/tonemap.sh`)
 applies the exposure and the tone mapper on the way to the window.
+
+### Bias
+
+The reuse follows GRIS (Lin et al. 2022, "Generalized Resampled Importance
+Sampling"): pairwise MIS weights, in the area measure at the sample point,
+between the canonical reservoir and each neighbour, with the reconnection
+Jacobian applied to every shifted sample (`shaders/restir.sh`). Under GRIS:
+
+- **Capping M at 20 adds no bias.** Any confidence weights are allowed as
+  long as the MIS weights sum to one; the cap only trades how much the
+  history counts against how fast it adapts.
+- **The Jacobian needs no clamp.** A shifted sample's MIS weight falls with
+  the geometry term at the receiver it came from as fast as the Jacobian
+  grows, so their product stays bounded. The example used to clamp it at 10,
+  which darkens wherever samples are reused across large changes in distance
+  or angle; **Clamp Jacobian** (Rendering section) restores that for
+  comparison, and is off by default.
+- **Clamp outliers** caps each pixel's estimate at 8 before accumulation, as
+  before. It is biased but cheap insurance against fireflies; in the Cornell
+  box it changes the mean by 0.05%.
+- Fresh rays leave from slightly above the receiver. Their density is now
+  converted to the solid angle at the receiver itself (the measure of the
+  target function), instead of taking the cosine from the receiver, which
+  overstated the density of nearby hits and darkened every fresh sample
+  slightly (about 0.8% in the Cornell box).
+
+Setting both tap counts to 0 turns reuse off: each pixel then uses its fresh
+candidates alone, which is plain, unbiased Monte Carlo (given the same rays)
+and makes a reference to measure the reuse against. In the Cornell box, with
+the light and camera at their defaults, BVH rays (so that visibility is
+exact), multiple bounces and the denoiser off, and the mean of the indirect
+light over 25 frames:
+
+| Reuse | vs. no reuse |
+| --- | --- |
+| Spatial only (grid, 4 taps) | +0.03% |
+| Temporal only, screen space (own reservoir, reprojected) | +0.01% |
+| Screen-space temporal, then screen-space spatial | +0.05% |
+| Temporal only, grid, 1 / 2 / 4 taps | +0.28% / +0.90% / +1.57% |
+| Defaults (grid, 2 temporal and 4 spatial taps) | +0.86% |
+
+So one hop between receivers is unbiased to within the measurement, but
+temporal reuse through the hash grid, where reservoirs keep hopping between
+receivers frame after frame, gains about 1% of light, growing with the
+number of taps. Multiple bounces feed that back and roughly double it. The
+source is not found yet: it is not screen-space visibility (the numbers
+above use the BVH), clipping, or a pixel reusing its own reservoir.
 
 ### Off-screen geometry: the BVH
 

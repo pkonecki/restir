@@ -201,6 +201,11 @@ SettingsWindowOutput drawSettingsWindow(const SettingsWindowInput& _input, Setti
 			_settings.worldSpaceReuse = reuse == 0;
 		}
 		ImGui::SetItemTooltip("Where reservoirs are reused from.");
+		ImGui::Checkbox("Clamp Jacobian", &_settings.clampJacobian);
+		ImGui::SetItemTooltip("Cap the reconnection Jacobian at %.0f, as the example used to.\nNot needed for stability (the pairwise MIS weights bound it);\nit darkens where samples are reused across large changes in\ndistance or angle, such as near corners.", kJacobianClamp);
+		ImGui::SameLine();
+		ImGui::Checkbox("Clamp outliers", &_settings.clampOutliers);
+		ImGui::SetItemTooltip("Cap each pixel's estimate at %.0f before accumulation, as the\nexample always did: fewer fireflies, at the cost of losing some\nlight (biased).", kOutlierClamp);
 
 		ImGui::Combo("View (V)", &_settings.debugView, kDebugViewNames, int(DebugView::Count));
 		ImGui::SetItemTooltip("%s", kDebugViewHelp[_settings.debugView]);
@@ -291,10 +296,10 @@ SettingsWindowOutput drawSettingsWindow(const SettingsWindowInput& _input, Setti
 		ImGui::SetItemTooltip("A-trous passes; each one doubles the filter radius.");
 		ImGui::SliderInt("Rays per pixel", &_settings.initialCandidates, 1, 8, "%d", sliderFlags);
 		ImGui::SetItemTooltip("Fresh candidates traced each frame in the temporal pass.");
-		ImGui::SliderInt("Temporal taps", &_settings.temporalTaps, 1, 4, "%d", sliderFlags);
-		ImGui::SetItemTooltip("Reservoirs reused from last frame.");
-		ImGui::SliderInt("Spatial taps", &_settings.spatialTaps, 1, 8, "%d", sliderFlags);
-		ImGui::SetItemTooltip("Reservoirs reused from this frame, each with a visibility ray.");
+		ImGui::SliderInt("Temporal taps", &_settings.temporalTaps, 0, 4, "%d", sliderFlags);
+		ImGui::SetItemTooltip("Reservoirs reused from last frame (0: no temporal reuse).");
+		ImGui::SliderInt("Spatial taps", &_settings.spatialTaps, 0, 8, "%d", sliderFlags);
+		ImGui::SetItemTooltip("Reservoirs reused from this frame, each with a visibility ray\n(0: no spatial reuse; 0 and 0 give plain, unbiased Monte Carlo).");
 		ImGui::SliderInt("Ray march steps", &_settings.traceSteps, 8, 64, "%d", sliderFlags);
 		ImGui::SetItemTooltip("Depth buffer steps per ray. Rays reach as far with fewer,\ncoarser steps, but miss thin geometry.");
 
