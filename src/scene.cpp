@@ -35,6 +35,73 @@ void appendIndices(
 	}
 }
 
+// Per-vertex tangents from the texture coordinates: each triangle's
+// direction of increasing u, summed over the triangles around a vertex,
+// made orthogonal to its normal. w is the sign of the bitangent (the
+// direction of increasing v). Vertices without usable texture coordinates
+// keep a zero tangent, which turns their normal map off.
+void computeTangents(
+	  const std::vector<fastgltf::math::fvec3>& _positions
+	, const std::vector<fastgltf::math::fvec3>& _normals
+	, const std::vector<fastgltf::math::fvec2>& _texcoords
+	, const std::vector<uint32_t>& _indices
+	, std::vector<fastgltf::math::fvec4>& _tangents
+	)
+{
+	std::vector<fastgltf::math::fvec3> tangentSums(_positions.size(), fastgltf::math::fvec3(0.0f));
+	std::vector<fastgltf::math::fvec3> bitangentSums(_positions.size(), fastgltf::math::fvec3(0.0f));
+	for (std::size_t idx = 0; idx + 2 < _indices.size(); idx += 3)
+	{
+		const uint32_t a = _indices[idx];
+		const uint32_t b = _indices[idx + 1];
+		const uint32_t c = _indices[idx + 2];
+		if (a >= _positions.size() || b >= _positions.size() || c >= _positions.size())
+		{
+			throw std::runtime_error("A glTF primitive contains an out-of-range index.");
+		}
+
+		const fastgltf::math::fvec3 edge1 = _positions[b] - _positions[a];
+		const fastgltf::math::fvec3 edge2 = _positions[c] - _positions[a];
+		const fastgltf::math::fvec2 uv1 = _texcoords[b] - _texcoords[a];
+		const fastgltf::math::fvec2 uv2 = _texcoords[c] - _texcoords[a];
+		const float determinant = uv1.x() * uv2.y() - uv2.x() * uv1.y();
+		if (std::abs(determinant) < 1e-12f)
+		{
+			continue;
+		}
+
+		const float scale = 1.0f / determinant;
+		const fastgltf::math::fvec3 tangent = (edge1 * uv2.y() - edge2 * uv1.y()) * scale;
+		const fastgltf::math::fvec3 bitangent = (edge2 * uv1.x() - edge1 * uv2.x()) * scale;
+		for (const uint32_t vertex : { a, b, c })
+		{
+			tangentSums[vertex] += tangent;
+			bitangentSums[vertex] += bitangent;
+		}
+	}
+
+	for (std::size_t idx = 0; idx < _positions.size(); ++idx)
+	{
+		const float normalLength = fastgltf::math::length(_normals[idx]);
+		if (normalLength < 1e-12f)
+		{
+			continue;
+		}
+
+		const fastgltf::math::fvec3 normal = _normals[idx] / normalLength;
+		const fastgltf::math::fvec3 tangent = tangentSums[idx] - normal * fastgltf::math::dot(normal, tangentSums[idx]);
+		const float tangentLength = fastgltf::math::length(tangent);
+		if (tangentLength < 1e-12f)
+		{
+			continue;
+		}
+
+		const float sign = fastgltf::math::dot(fastgltf::math::cross(normal, tangent), bitangentSums[idx]) < 0.0f ? -1.0f : 1.0f;
+		const fastgltf::math::fvec3 unit = tangent / tangentLength;
+		_tangents[idx] = fastgltf::math::fvec4(unit.x(), unit.y(), unit.z(), sign);
+	}
+}
+
 void appendPrimitive(
 	  const fastgltf::Asset& _asset
 	, const fastgltf::Primitive& _primitive
@@ -157,6 +224,65 @@ void appendPrimitive(
 		}
 	}
 
+	// COLOR_0 multiplies the base colour (its alpha is not used).
+	std::vector<fastgltf::math::fvec3> colors(positions.size(), fastgltf::math::fvec3(1.0f));
+	const auto colorAttribute = _primitive.findAttribute("COLOR_0");
+	if (colorAttribute != _primitive.attributes.end())
+	{
+		const fastgltf::Accessor& accessor = _asset.accessors[colorAttribute->accessorIndex];
+		if (accessor.count != positions.size())
+		{
+			throw std::runtime_error("A glTF primitive has mismatched POSITION and COLOR_0 counts.");
+		}
+
+		std::size_t idx = 0;
+		if (accessor.type == fastgltf::AccessorType::Vec4)
+		{
+			for (const auto& color : fastgltf::iterateAccessor<fastgltf::math::fvec4>(_asset, accessor))
+			{
+				colors[idx++] = fastgltf::math::fvec3(color.x(), color.y(), color.z());
+			}
+		}
+		else if (accessor.type == fastgltf::AccessorType::Vec3)
+		{
+			for (const auto& color : fastgltf::iterateAccessor<fastgltf::math::fvec3>(_asset, accessor))
+			{
+				colors[idx++] = color;
+			}
+		}
+	}
+
+	// Primitives without a material use the default one, after the glTF ones.
+	const std::size_t materialSlot = _primitive.materialIndex.has_value()
+		? _primitive.materialIndex.value()
+		: _asset.materials.size();
+
+	// Tangents, for normal maps only: TANGENT if the model has it, otherwise
+	// derived from the texture coordinates. Zero means no normal map.
+	std::vector<fastgltf::math::fvec4> tangents(positions.size(), fastgltf::math::fvec4(0.0f));
+	if (_mesh.m_materials[materialSlot].m_normalImage >= 0 && texcoordAttribute != _primitive.attributes.end())
+	{
+		const auto tangentAttribute = _primitive.findAttribute("TANGENT");
+		if (tangentAttribute != _primitive.attributes.end()
+		&&  _asset.accessors[tangentAttribute->accessorIndex].count == positions.size())
+		{
+			std::size_t idx = 0;
+			for (const auto& tangent : fastgltf::iterateAccessor<fastgltf::math::fvec4>(
+				_asset, _asset.accessors[tangentAttribute->accessorIndex]))
+			{
+				tangents[idx++] = tangent;
+			}
+		}
+		else
+		{
+			computeTangents(positions, normals, texcoords, indices, tangents);
+		}
+	}
+
+	// A mirroring transform flips the bitangent.
+	const fastgltf::math::fmat3x3 linearTransform(_transform);
+	const float handedness = fastgltf::math::determinant(linearTransform) < 0.0f ? -1.0f : 1.0f;
+
 	// glTF material defaults: white, fully rough, fully metallic, not emissive.
 	fastgltf::math::fvec4 baseColor(1.0f);
 	float roughness = 1.0f;
@@ -170,7 +296,9 @@ void appendPrimitive(
 		metallic = float(material.pbrData.metallicFactor);
 		const float emissiveStrength = float(material.emissiveStrength)
 			* std::max({ float(material.emissiveFactor[0]), float(material.emissiveFactor[1]), float(material.emissiveFactor[2]) });
-		isEmissive = emissiveStrength > 0.0f;
+		// Only uniform emitters (light panels) place the light; an emissive
+		// texture usually marks small glowing details over a whole object.
+		isEmissive = emissiveStrength > 0.0f && !material.emissiveTexture.has_value();
 	}
 
 	for (std::size_t idx = 0; idx < positions.size(); ++idx)
@@ -190,13 +318,21 @@ void appendPrimitive(
 		vertex.m_normal[0] = normal.x();
 		vertex.m_normal[1] = normal.y();
 		vertex.m_normal[2] = normal.z();
-		vertex.m_color[0] = float(baseColor[0]);
-		vertex.m_color[1] = float(baseColor[1]);
-		vertex.m_color[2] = float(baseColor[2]);
+		vertex.m_color[0] = float(baseColor[0]) * colors[idx].x();
+		vertex.m_color[1] = float(baseColor[1]) * colors[idx].y();
+		vertex.m_color[2] = float(baseColor[2]) * colors[idx].z();
 		vertex.m_material[0] = roughness;
 		vertex.m_material[1] = metallic;
 		vertex.m_texcoord[0] = texcoords[idx].x();
 		vertex.m_texcoord[1] = texcoords[idx].y();
+		const fastgltf::math::fvec3 tangent = linearTransform
+			* fastgltf::math::fvec3(tangents[idx].x(), tangents[idx].y(), tangents[idx].z());
+		const float tangentLength = fastgltf::math::length(tangent);
+		const bool hasTangent = tangentLength > 1e-12f && tangents[idx].w() != 0.0f;
+		vertex.m_tangent[0] = hasTangent ? tangent.x() / tangentLength : 0.0f;
+		vertex.m_tangent[1] = hasTangent ? tangent.y() / tangentLength : 0.0f;
+		vertex.m_tangent[2] = hasTangent ? tangent.z() / tangentLength : 0.0f;
+		vertex.m_tangent[3] = hasTangent ? (tangents[idx].w() < 0.0f ? -handedness : handedness) : 0.0f;
 		_mesh.m_vertices.push_back(vertex);
 
 		const bx::Vec3 worldPosition = { position.x(), position.y(), position.z() };
@@ -204,10 +340,6 @@ void appendPrimitive(
 		_mesh.m_boundsMax = bx::max(_mesh.m_boundsMax, worldPosition);
 	}
 
-	// Primitives without a material use the default one, after the glTF ones.
-	const std::size_t materialSlot = _primitive.materialIndex.has_value()
-		? _primitive.materialIndex.value()
-		: _asset.materials.size();
 	std::vector<uint32_t>& materialIndices = _mesh.m_materialIndices[materialSlot];
 	for (const uint32_t index : indices)
 	{
@@ -461,7 +593,9 @@ bool decodeImage(const std::vector<uint8_t>& _bytes, bool _gamma, SceneImage& _i
 }
 
 // The glTF image a texture slot of a material refers to, if any.
-std::optional<std::size_t> textureImage(const fastgltf::Asset& _asset, const fastgltf::Optional<fastgltf::TextureInfo>& _info)
+// (_info is a fastgltf::Optional of TextureInfo or a type derived from it.)
+template<typename OptionalInfo>
+std::optional<std::size_t> textureImage(const fastgltf::Asset& _asset, const OptionalInfo& _info)
 {
 	if (!_info.has_value() || _info->textureIndex >= _asset.textures.size())
 	{
@@ -493,9 +627,21 @@ void loadMaterials(const fastgltf::Asset& _asset, const std::filesystem::path& _
 		{
 			imageUse[*image] = 2;
 		}
-		if (const auto image = textureImage(_asset, material.pbrData.metallicRoughnessTexture))
+		if (const auto image = textureImage(_asset, material.emissiveTexture))
 		{
-			imageUse[*image] = std::max<int8_t>(imageUse[*image], 1);
+			imageUse[*image] = 2;
+		}
+		for (const auto image :
+			{
+				textureImage(_asset, material.pbrData.metallicRoughnessTexture),
+				textureImage(_asset, material.normalTexture),
+				textureImage(_asset, material.occlusionTexture),
+			})
+		{
+			if (image)
+			{
+				imageUse[*image] = std::max<int8_t>(imageUse[*image], 1);
+			}
 		}
 	}
 
@@ -544,6 +690,24 @@ void loadMaterials(const fastgltf::Asset& _asset, const std::filesystem::path& _
 			// texture. Without the texture, the factor alone would make the
 			// material bare metal (no diffuse light at all).
 			material.m_metallicTextureMissing = material.m_metallicRoughnessImage < 0;
+		}
+		if (const auto image = textureImage(_asset, source.normalTexture))
+		{
+			material.m_normalImage = imageSlots[*image];
+			material.m_normalScale = float(source.normalTexture->scale);
+		}
+		if (const auto image = textureImage(_asset, source.occlusionTexture))
+		{
+			material.m_occlusionImage = imageSlots[*image];
+			material.m_occlusionStrength = float(source.occlusionTexture->strength);
+		}
+		if (const auto image = textureImage(_asset, source.emissiveTexture))
+		{
+			material.m_emissiveImage = imageSlots[*image];
+		}
+		for (int channel = 0; channel < 3; ++channel)
+		{
+			material.m_emissive[channel] = float(source.emissiveFactor[channel]) * float(source.emissiveStrength);
 		}
 		if (source.alphaMode == fastgltf::AlphaMode::Mask)
 		{

@@ -62,6 +62,8 @@ enum class DebugView : int
 	Albedo,
 	Normals,
 	RoughnessMetallic,
+	Emission,
+	Occlusion,
 	ReservoirCount,
 	ReservoirWeight,
 	HistoryLength,
@@ -78,6 +80,8 @@ constexpr const char* kDebugViewNames[] =
 	"Base colour",
 	"Normals",
 	"Roughness (R), metallic (G)",
+	"Emission",
+	"Ambient occlusion",
 	"Reservoir M",
 	"Reservoir W",
 	"History length",
@@ -88,12 +92,14 @@ static_assert(BX_COUNTOF(kDebugViewNames) == size_t(DebugView::Count));
 constexpr const char* kDebugViewHelp[] =
 {
 	"The composited, tone mapped image.",
-	"The point light's direct lighting (PBR, shadowed), without GI.",
+	"The point light's direct lighting (PBR, shadowed) and the\nmaterials' emission, without GI.",
 	"The ReSTIR GI result alone, times the diffuse albedo.",
 	"The denoised GI before the albedo is multiplied in (demodulated),\nat GI resolution, upsampled.",
 	"The G-buffer's base colour.",
-	"The G-buffer's world-space normals, as colours.",
+	"The normals the direct light is shaded with (normal maps\nincluded), as colours. The GI passes use the surface's own normal.",
 	"The G-buffer's roughness in red and metallic in green.",
+	"The emitted radiance of emissive materials (factor times texture),\ncompressed with Reinhard so that strong emitters stay readable.",
+	"The materials' ambient occlusion textures (white where none), which\ndim the indirect light.",
 	"Candidates behind each pixel's reservoir after the temporal pass,\nfrom 0 (blue) to the most it can reach (red).",
 	"Unbiased contribution weight of each pixel's reservoir, on a log\nscale from 2^-8 (blue) to 2^8 (red); black where it is zero.",
 	"Frames accumulated in each pixel's GI estimate, from 1 (blue: just\ndisoccluded, history rejected) to 16 (red).",
@@ -124,6 +130,7 @@ struct Settings
 	bool worldSpaceReuse = true;
 	bool vsync = true;
 	bool hideWindowInScreenshots = true;
+	bool emissiveLighting = true; // emissive surfaces on screen light the scene through GI
 
 	int debugView = int(DebugView::Final);
 

@@ -3,8 +3,8 @@
  * License: https://github.com/bkaradzic/bgfx/blob/master/LICENSE
  */
 
-$input a_position, a_normal, a_color0, a_texcoord0, a_texcoord1
-$output v_worldPosition, v_worldNormal, v_albedo, v_material, v_texcoord0
+$input a_position, a_normal, a_color0, a_texcoord0, a_texcoord1, a_tangent
+$output v_worldPosition, v_worldNormal, v_albedo, v_material, v_texcoord0, v_worldTangent
 
 #include <common.sh>
 
@@ -19,4 +19,6 @@ void main()
 	v_albedo = a_color0;
 	v_material = a_texcoord1;
 	v_texcoord0 = a_texcoord0;
+	// Zero when the material has no normal map.
+	v_worldTangent = vec4(mul(u_model[0], vec4(a_tangent.xyz, 0.0)).xyz, a_tangent.w);
 }

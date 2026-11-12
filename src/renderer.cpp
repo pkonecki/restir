@@ -93,12 +93,19 @@ void Renderer::init(const Settings& _settings)
 	}
 
 	// Materials: a white texture stands in for missing ones, so the
-	// factors apply unchanged.
+	// factors apply unchanged, and a flat one for missing normal maps.
 	m_baseColorSampler = bgfx::createUniform("s_baseColor", bgfx::UniformType::Sampler);
 	m_metallicRoughnessSampler = bgfx::createUniform("s_metallicRoughness", bgfx::UniformType::Sampler);
+	m_normalMapSampler = bgfx::createUniform("s_normalMap", bgfx::UniformType::Sampler);
+	m_occlusionSampler = bgfx::createUniform("s_occlusion", bgfx::UniformType::Sampler);
+	m_emissiveMapSampler = bgfx::createUniform("s_emissiveMap", bgfx::UniformType::Sampler);
 	m_materialInfoUniform = bgfx::createUniform("u_materialInfo", bgfx::UniformType::Vec4);
-	const uint32_t white = 0xffffffff;
-	m_whiteTexture = bgfx::createTexture2D(1, 1, false, 1, bgfx::TextureFormat::RGBA8, 0, bgfx::copy(&white, sizeof(white)));
+	m_materialEmissiveUniform = bgfx::createUniform("u_materialEmissive", bgfx::UniformType::Vec4);
+	m_materialFactorsUniform = bgfx::createUniform("u_materialFactors", bgfx::UniformType::Vec4);
+	const uint8_t white[] = { 255, 255, 255, 255 };
+	m_whiteTexture = bgfx::createTexture2D(1, 1, false, 1, bgfx::TextureFormat::RGBA8, 0, bgfx::copy(white, sizeof(white)));
+	const uint8_t flatNormal[] = { 128, 128, 255, 255 };
+	m_flatNormalTexture = bgfx::createTexture2D(1, 1, false, 1, bgfx::TextureFormat::RGBA8, 0, bgfx::copy(flatNormal, sizeof(flatNormal)));
 
 	const FullscreenVertex fullscreenVertices[] =
 	{
@@ -166,6 +173,8 @@ void Renderer::init(const Settings& _settings)
 	m_exposureAdaptUniform = bgfx::createUniform("u_exposureAdapt", bgfx::UniformType::Vec4);
 	m_tonemapUniform = bgfx::createUniform("u_tonemap", bgfx::UniformType::Vec4);
 	m_debugViewUniform = bgfx::createUniform("u_debugView", bgfx::UniformType::Vec4);
+	m_emissiveSampler = bgfx::createUniform("s_emissive", bgfx::UniformType::Sampler);
+	m_shadingNormalSampler = bgfx::createUniform("s_shadingNormal", bgfx::UniformType::Sampler);
 	m_compositeOptionsUniform = bgfx::createUniform("u_compositeOptions", bgfx::UniformType::Vec4);
 
 	// Two hash grids, this frame's and last frame's, like the reservoirs
@@ -213,6 +222,7 @@ void Renderer::shutdown()
 	destroyIfValid(m_shadowFrameBuffer);
 	destroyScene();
 	destroyIfValid(m_whiteTexture);
+	destroyIfValid(m_flatNormalTexture);
 	destroyIfValid(m_fullscreenVbh);
 	destroyIfValid(m_fullscreenIbh);
 	destroyIfValid(m_exposureBuffer);
@@ -248,6 +258,9 @@ void Renderer::shutdown()
 		m_reservoirSampleSampler, m_reservoirReceiverSampler, m_reservoirNormalSampler,
 		m_gridInfoUniform, m_gridCameraUniform, m_restirOptionsUniform,
 		m_baseColorSampler, m_metallicRoughnessSampler, m_materialInfoUniform,
+		m_normalMapSampler, m_occlusionSampler, m_emissiveMapSampler,
+		m_materialEmissiveUniform, m_materialFactorsUniform,
+		m_emissiveSampler, m_shadingNormalSampler,
 		m_hdrSampler, m_exposureAdaptUniform, m_tonemapUniform,
 		m_debugViewUniform, m_compositeOptionsUniform,
 	};
@@ -336,7 +349,7 @@ void Renderer::render(const FrameInput& _input, const Settings& _settings)
 		light.color[2] * lightIntensityScale,
 		1.0f,
 	};
-	const float sceneInfo[] = { sceneScale, 0.0f, 0.0f, 0.0f };
+	const float sceneInfo[] = { sceneScale, _settings.emissiveLighting ? 1.0f : 0.0f, 0.0f, 0.0f };
 	const float cameraPosition[] = { eye.x, eye.y, eye.z, 1.0f };
 
 	const uint16_t giWidth = uint16_t(std::max(1u, width / m_targetGiDivisor));
@@ -400,7 +413,7 @@ void Renderer::render(const FrameInput& _input, const Settings& _settings)
 				{
 							bgfx::setVertexBuffer(0, m_vbh);
 					bgfx::setIndexBuffer(m_ibh, draw.m_firstIndex, draw.m_indexCount);
-					setMaterial(draw.m_material);
+					setMaterial(draw.m_material, false);
 					bgfx::setUniform(m_lightPosition, lightPosition);
 					bgfx::setUniform(m_shadowInfoUniform, shadowInfo);
 					bgfx::setState(BGFX_STATE_WRITE_R | BGFX_STATE_WRITE_Z | BGFX_STATE_DEPTH_TEST_LESS);
@@ -419,7 +432,7 @@ void Renderer::render(const FrameInput& _input, const Settings& _settings)
 	{
 		bgfx::setVertexBuffer(0, m_vbh);
 		bgfx::setIndexBuffer(m_ibh, draw.m_firstIndex, draw.m_indexCount);
-		setMaterial(draw.m_material);
+		setMaterial(draw.m_material, true);
 		bgfx::setState(
 			  BGFX_STATE_WRITE_RGB
 			| BGFX_STATE_WRITE_A
@@ -500,6 +513,7 @@ void Renderer::render(const FrameInput& _input, const Settings& _settings)
 		bgfx::setTexture(6, m_historyNormalSampler, m_historyNormal[m_historyRead]);
 		bgfx::setTexture(7, m_shadowSampler, m_shadowMap);
 		bgfx::setTexture(9, m_historyReceiverSampler, m_historyReceiver[m_historyRead]);
+		bgfx::setTexture(14, m_emissiveSampler, m_gbufferEmissive);
 		bgfx::setUniform(m_shadowViewProjUniform, shadowViewProj, 6);
 		bgfx::setUniform(m_shadowInfoUniform, shadowInfo);
 		bgfx::setUniform(m_shadowOptionsUniform, shadowOptions);
@@ -639,6 +653,8 @@ void Renderer::render(const FrameInput& _input, const Settings& _settings)
 		bgfx::setTexture(3, m_reservoirSampleSampler, m_historySample[historyWrite]);
 		bgfx::setTexture(4, m_reservoirReceiverSampler, m_historyReceiver[historyWrite]);
 		bgfx::setTexture(5, m_giMomentsSampler, m_historyMoments[historyWrite]);
+		bgfx::setTexture(6, m_emissiveSampler, m_gbufferEmissive);
+		bgfx::setTexture(7, m_shadingNormalSampler, m_gbufferShadingNormal);
 		setGrid(currentGrid);
 		bgfx::setUniform(m_inverseViewProjection, inverseViewProjection);
 		bgfx::setUniform(m_gridInfoUniform, gridInfo);
@@ -656,7 +672,7 @@ void Renderer::render(const FrameInput& _input, const Settings& _settings)
 			debugView == DebugView::Final || debugView == DebugView::DirectLight ? 1.0f : 0.0f,
 			debugView == DebugView::DirectLight ? 0.0f : 1.0f,
 			debugView == DebugView::Irradiance ? 0.0f : 1.0f,
-			0.0f,
+			debugView == DebugView::Final || debugView == DebugView::DirectLight ? 1.0f : 0.0f,
 		};
 		bgfx::setUniform(m_compositeOptionsUniform, compositeOptions);
 		bgfx::setTexture(0, m_albedoSampler, m_gbufferAlbedo);
@@ -664,6 +680,8 @@ void Renderer::render(const FrameInput& _input, const Settings& _settings)
 		bgfx::setTexture(2, m_depthSampler, m_gbufferDepth);
 		bgfx::setTexture(3, m_giSampler, denoised);
 		bgfx::setTexture(4, m_shadowSampler, m_shadowMap);
+		bgfx::setTexture(5, m_emissiveSampler, m_gbufferEmissive);
+		bgfx::setTexture(6, m_shadingNormalSampler, m_gbufferShadingNormal);
 		bgfx::setUniform(m_shadowViewProjUniform, shadowViewProj, 6);
 		bgfx::setUniform(m_shadowInfoUniform, shadowInfo);
 		bgfx::setUniform(m_shadowOptionsUniform, shadowOptions);
@@ -730,17 +748,17 @@ void Renderer::render(const FrameInput& _input, const Settings& _settings)
 }
 
 // Binds a material's textures (white where it has none) and parameters
-// for the next draw, in the G-buffer or shadow pass.
-void Renderer::setMaterial(uint32_t _material)
+// for the next draw, in the G-buffer pass or (base colour only, for alpha
+// masks) the shadow pass.
+void Renderer::setMaterial(uint32_t _material, bool _gbuffer)
 {
 	const SceneMaterial& material = m_materials[_material];
-	const auto texture = [this](int32_t _image)
+	const auto texture = [this](int32_t _image, bgfx::TextureHandle _fallback)
 	{
-		return _image >= 0 ? m_modelTextures[_image] : m_whiteTexture;
+		return _image >= 0 ? m_modelTextures[_image] : _fallback;
 	};
 
-	bgfx::setTexture(0, m_baseColorSampler, texture(material.m_baseColorImage));
-	bgfx::setTexture(1, m_metallicRoughnessSampler, texture(material.m_metallicRoughnessImage));
+	bgfx::setTexture(0, m_baseColorSampler, texture(material.m_baseColorImage, m_whiteTexture));
 	const float materialInfo[] =
 	{
 		material.m_alphaCutoff,
@@ -749,6 +767,19 @@ void Renderer::setMaterial(uint32_t _material)
 		0.0f,
 	};
 	bgfx::setUniform(m_materialInfoUniform, materialInfo);
+	if (!_gbuffer)
+	{
+		return;
+	}
+
+	bgfx::setTexture(1, m_metallicRoughnessSampler, texture(material.m_metallicRoughnessImage, m_whiteTexture));
+	bgfx::setTexture(2, m_normalMapSampler, texture(material.m_normalImage, m_flatNormalTexture));
+	bgfx::setTexture(3, m_occlusionSampler, texture(material.m_occlusionImage, m_whiteTexture));
+	bgfx::setTexture(4, m_emissiveMapSampler, texture(material.m_emissiveImage, m_whiteTexture));
+	const float emissive[] = { material.m_emissive[0], material.m_emissive[1], material.m_emissive[2], 0.0f };
+	const float factors[] = { material.m_normalScale, material.m_occlusionStrength, 0.0f, 0.0f };
+	bgfx::setUniform(m_materialEmissiveUniform, emissive);
+	bgfx::setUniform(m_materialFactorsUniform, factors);
 }
 
 void Renderer::setFullscreenGeometry()
@@ -823,12 +854,12 @@ void Renderer::createRenderTargets(uint32_t _width, uint32_t _height, const Sett
 	const uint16_t giWidth = uint16_t(std::max(1u, _width / giDivisor));
 	const uint16_t giHeight = uint16_t(std::max(1u, _height / giDivisor));
 
-	if (bgfx::getCaps()->limits.maxFBAttachments < 3
+	if (bgfx::getCaps()->limits.maxFBAttachments < 4
 	||  !bgfx::isTextureValid(0, false, 1, bgfx::TextureFormat::RGBA16F, BGFX_TEXTURE_RT)
 	||  !bgfx::isTextureValid(0, false, 1, bgfx::TextureFormat::RGBA32F, BGFX_TEXTURE_RT))
 	{
 		throw std::runtime_error(
-			"ReSTIR GI requires three framebuffer attachments and RGBA16F/RGBA32F render targets.");
+			"ReSTIR GI requires four colour attachments and RGBA16F/RGBA32F render targets.");
 	}
 
 	const auto createTarget = [&](uint32_t _targetWidth, uint32_t _targetHeight, bgfx::TextureFormat::Enum _format)
@@ -841,6 +872,8 @@ void Renderer::createRenderTargets(uint32_t _width, uint32_t _height, const Sett
 
 	m_gbufferAlbedo = createTarget(_width, _height, bgfx::TextureFormat::BGRA8);
 	m_gbufferNormal = createTarget(_width, _height, bgfx::TextureFormat::BGRA8);
+	m_gbufferEmissive = createTarget(_width, _height, bgfx::TextureFormat::RGBA16F);
+	m_gbufferShadingNormal = createTarget(_width, _height, bgfx::TextureFormat::BGRA8);
 	m_gbufferDepth = createTarget(_width, _height
 		, bgfx::isTextureValid(0, false, 1, bgfx::TextureFormat::D32F, BGFX_TEXTURE_RT | samplerFlags)
 		? bgfx::TextureFormat::D32F
@@ -848,7 +881,7 @@ void Renderer::createRenderTargets(uint32_t _width, uint32_t _height, const Sett
 		);
 	const bgfx::TextureHandle gbufferTextures[] =
 	{
-		m_gbufferAlbedo, m_gbufferNormal, m_gbufferDepth,
+		m_gbufferAlbedo, m_gbufferNormal, m_gbufferEmissive, m_gbufferShadingNormal, m_gbufferDepth,
 	};
 	m_gbuffer = bgfx::createFrameBuffer(BX_COUNTOF(gbufferTextures), gbufferTextures, true);
 

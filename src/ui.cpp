@@ -190,6 +190,8 @@ SettingsWindowOutput drawSettingsWindow(const SettingsWindowInput& _input, Setti
 		ImGui::SetItemTooltip("Feed last frame's indirect light back into the samples.");
 		ImGui::Checkbox("Shadows (H)", &_settings.shadows);
 		ImGui::Checkbox("Denoiser (N)", &_settings.denoiser);
+		ImGui::Checkbox("Emissive lighting (E)", &_settings.emissiveLighting);
+		ImGui::SetItemTooltip("Emissive surfaces light the scene through GI. Like all GI here,\nonly the emitters visible on screen contribute.");
 		int reuse = _settings.worldSpaceReuse ? 0 : 1;
 		if (ImGui::Combo("Reuse (G)", &reuse, "World-space hash grid\0Screen-space\0"))
 		{

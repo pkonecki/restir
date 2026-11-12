@@ -59,17 +59,26 @@ restir_gi --model path/to/scene.gltf
 The camera starts looking at the centre of the scene's bounds, from outside
 the scene, except in Sponza, which is closed all around, where it starts
 inside the courtyard. Distances in the GI pass scale with the scene's size. A
-point light is placed in front of the scene's emissive surfaces, or near the
-top of the scene if it has none. Its intensity scales with the square of the
-scene's size. Primitives that are not triangle lists are skipped.
+point light is placed in front of the scene's untextured emissive surfaces
+(light panels), or near the top of the scene if it has none; for a closed
+object, such as a helmet, that is inside it, so press L to bring the light to
+the camera. Its intensity scales with the square of the scene's size. Primitives that are not triangle lists are skipped.
 
 Materials use their base colour, metallic and roughness factors, multiplied
-by their base colour and metallic-roughness textures (read with `TEXCOORD_0`,
-external files or embedded, decoded with bimg, with mipmaps built at load
-time). Alpha-masked materials, such as Sponza's plants, are cut out in both
-the G-buffer and the shadow map, and double-sided ones are lit from both
-sides. Normal, occlusion and emissive textures, texture transforms, glTF
-samplers (textures always repeat) and vertex colours are not used. A texture
+by their base colour and metallic-roughness textures and the vertex colours
+(`COLOR_0`). Textures are read with `TEXCOORD_0`, from external files or
+embedded, decoded with bimg, with mipmaps built at load time. Normal maps
+use the model's tangents, or tangents derived from the texture coordinates
+when it has none; they shade the direct light, while the GI passes keep the
+surface's own normal, so that bumps do not stop neighbouring receivers from
+sharing reservoirs. Occlusion textures dim the indirect light, as glTF
+specifies. Emission (factor, `KHR_materials_emissive_strength` and texture)
+is added to the image and, unless **Emissive lighting** (E) is off, lights
+the scene through GI, from the emitters that are on screen. Alpha-masked
+materials, such as Sponza's plants, are cut out in both the G-buffer and the
+shadow map, and double-sided ones are lit from both sides. Texture
+transforms, texture coordinate sets other than the first, and glTF samplers
+(textures always repeat) are not used. A texture
 that cannot be read is skipped with a warning; if it was a metallic-roughness
 texture, its material is treated as non-metallic, since models with one
 usually leave the metallic factor at its default of 1.
@@ -112,13 +121,14 @@ sections:
   reservoir's sample each frame, so the bounced light follows a moving light,
   while the denoised history trails it by a few frames. Loading a model, or
   **Reset light**, puts it back at the scene's default position.
-- **Rendering**: multiple bounces (B), shadows (H), the denoiser (N), and
-  whether reservoirs are reused through the world-space hash grid or from
+- **Rendering**: multiple bounces (B), shadows (H), the denoiser (N),
+  emissive lighting (E), and whether reservoirs are reused through the world-space hash grid or from
   screen-space neighbourhoods (G).
   The view (V cycles through them) shows the final image or a debug view:
   direct light only, indirect light only, or the GI irradiance before the
   albedo is multiplied in (tone mapped like the final image); or, as plain
-  colours, the G-buffer's base colour, normals, roughness and metallic, each
+  colours, the G-buffer's base colour, normals, roughness and metallic,
+  emission and ambient occlusion, each
   pixel's reservoir M and W and GI history length (heat maps), and the
   world-space hash grid's cells. The tooltip says how to read each one.
   Below them, the exposure: the tone mapper (T cycles through AgX, the

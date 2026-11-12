@@ -304,6 +304,10 @@ private:
 		{
 			switchModel((m_modelIndex + 1) % m_modelPaths.size());
 		}
+		if (keyPressed(entry::Key::KeyE, m_emissiveKeyDown))
+		{
+			m_settings.emissiveLighting = !m_settings.emissiveLighting;
+		}
 		if (keyPressed(entry::Key::KeyV, m_viewKeyDown))
 		{
 			m_settings.debugView = (m_settings.debugView + 1) % int(DebugView::Count);
@@ -443,6 +447,7 @@ private:
 	bool m_lightKeyDown = false;
 	bool m_tonemapKeyDown = false;
 	bool m_viewKeyDown = false;
+	bool m_emissiveKeyDown = false;
 	bool m_screenshotKeyDown = false;
 	bool m_windowKeyDown = false;
 	bool m_bookmarkKeyDown[kMaxBookmarks] = {};

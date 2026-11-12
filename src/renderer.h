@@ -80,7 +80,7 @@ public:
 
 private:
 	void destroyScene();
-	void setMaterial(uint32_t _material);
+	void setMaterial(uint32_t _material, bool _gbuffer);
 	void setFullscreenGeometry();
 	void destroyRenderTargets();
 	void createRenderTargets(uint32_t _width, uint32_t _height, const Settings& _settings);
@@ -95,9 +95,15 @@ private:
 	std::vector<SceneMaterial> m_materials;
 	std::vector<SceneDraw> m_draws;
 	bgfx::TextureHandle m_whiteTexture = BGFX_INVALID_HANDLE;
+	bgfx::TextureHandle m_flatNormalTexture = BGFX_INVALID_HANDLE;
 	bgfx::UniformHandle m_baseColorSampler = BGFX_INVALID_HANDLE;
 	bgfx::UniformHandle m_metallicRoughnessSampler = BGFX_INVALID_HANDLE;
+	bgfx::UniformHandle m_normalMapSampler = BGFX_INVALID_HANDLE;
+	bgfx::UniformHandle m_occlusionSampler = BGFX_INVALID_HANDLE;
+	bgfx::UniformHandle m_emissiveMapSampler = BGFX_INVALID_HANDLE;
 	bgfx::UniformHandle m_materialInfoUniform = BGFX_INVALID_HANDLE;
+	bgfx::UniformHandle m_materialEmissiveUniform = BGFX_INVALID_HANDLE;
+	bgfx::UniformHandle m_materialFactorsUniform = BGFX_INVALID_HANDLE;
 
 	bgfx::VertexBufferHandle m_fullscreenVbh = BGFX_INVALID_HANDLE;
 	bgfx::IndexBufferHandle m_fullscreenIbh = BGFX_INVALID_HANDLE;
@@ -106,6 +112,8 @@ private:
 	bgfx::FrameBufferHandle m_gbuffer = BGFX_INVALID_HANDLE;
 	bgfx::TextureHandle m_gbufferAlbedo = BGFX_INVALID_HANDLE;
 	bgfx::TextureHandle m_gbufferNormal = BGFX_INVALID_HANDLE;
+	bgfx::TextureHandle m_gbufferEmissive = BGFX_INVALID_HANDLE;      // rgb: emission, a: occlusion
+	bgfx::TextureHandle m_gbufferShadingNormal = BGFX_INVALID_HANDLE; // with the normal map
 	bgfx::TextureHandle m_gbufferDepth = BGFX_INVALID_HANDLE;
 	bgfx::TextureHandle m_historyColor[2] = { BGFX_INVALID_HANDLE, BGFX_INVALID_HANDLE };
 	bgfx::TextureHandle m_historySample[2] = { BGFX_INVALID_HANDLE, BGFX_INVALID_HANDLE };
@@ -200,4 +208,6 @@ private:
 	bgfx::UniformHandle m_tonemapUniform = BGFX_INVALID_HANDLE;
 	bgfx::UniformHandle m_debugViewUniform = BGFX_INVALID_HANDLE;
 	bgfx::UniformHandle m_compositeOptionsUniform = BGFX_INVALID_HANDLE;
+	bgfx::UniformHandle m_emissiveSampler = BGFX_INVALID_HANDLE;
+	bgfx::UniformHandle m_shadingNormalSampler = BGFX_INVALID_HANDLE;
 };

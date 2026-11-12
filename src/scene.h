@@ -15,9 +15,10 @@ struct SceneVertex
 {
 	float m_position[3];
 	float m_normal[3];
-	float m_color[3];
+	float m_color[3];    // base colour factor times COLOR_0
 	float m_material[2]; // roughness, metallic
 	float m_texcoord[2];
+	float m_tangent[4];  // xyz: tangent, w: bitangent sign; zero when the material has no normal map
 
 	static void init()
 	{
@@ -28,6 +29,7 @@ struct SceneVertex
 			.add(bgfx::Attrib::Color0,    3, bgfx::AttribType::Float)
 			.add(bgfx::Attrib::TexCoord1, 2, bgfx::AttribType::Float)
 			.add(bgfx::Attrib::TexCoord0, 2, bgfx::AttribType::Float)
+			.add(bgfx::Attrib::Tangent,   4, bgfx::AttribType::Float)
 			.end();
 	}
 
@@ -46,6 +48,12 @@ struct SceneMaterial
 {
 	int32_t m_baseColorImage = -1;         // index into SceneMesh::m_images, -1: none
 	int32_t m_metallicRoughnessImage = -1; // index into SceneMesh::m_images, -1: none
+	int32_t m_normalImage = -1;            // tangent-space normal map
+	int32_t m_occlusionImage = -1;         // ambient occlusion in the red channel
+	int32_t m_emissiveImage = -1;          // sRGB-encoded emitted colour
+	float m_normalScale = 1.0f;
+	float m_occlusionStrength = 1.0f;
+	float m_emissive[3] = { 0.0f, 0.0f, 0.0f }; // emissive factor times KHR_materials_emissive_strength
 	float m_alphaCutoff = 0.0f;            // alpha-masked materials discard texels below it
 	bool m_twoSidedMask = false;           // alpha-masked and double-sided, like foliage cards
 	bool m_metallicTextureMissing = false; // has a metallic-roughness texture that could not be loaded
@@ -74,7 +82,8 @@ struct SceneMesh
 	bx::Vec3 m_boundsMin = {  std::numeric_limits<float>::max(),  std::numeric_limits<float>::max(),  std::numeric_limits<float>::max() };
 	bx::Vec3 m_boundsMax = { -std::numeric_limits<float>::max(), -std::numeric_limits<float>::max(), -std::numeric_limits<float>::max() };
 
-	// Area-weighted sums over emissive triangles, used to place the light.
+	// Area-weighted sums over the triangles of untextured emissive materials,
+	// used to place the light.
 	bx::Vec3 m_emissiveCentroid = { 0.0f, 0.0f, 0.0f };
 	bx::Vec3 m_emissiveNormal = { 0.0f, 0.0f, 0.0f };
 	float m_emissiveArea = 0.0f;

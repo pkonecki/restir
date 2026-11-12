@@ -19,6 +19,8 @@ SAMPLER2D(s_depth, 2);
 SAMPLER2D(s_reservoirSample, 3);   // xyz: sample position, w: M
 SAMPLER2D(s_reservoirReceiver, 4); // xyz: receiver position, w: W
 SAMPLER2D(s_giMoments, 5);         // z: history length
+SAMPLER2D(s_emissive, 6);          // rgb: emitted radiance, a: ambient occlusion
+SAMPLER2D(s_shadingNormal, 7);     // rgb: encoded normal, with the normal map
 
 uniform mat4 u_sceneInvViewProj;
 uniform vec4 u_debugView; // x: view (DebugView in settings.h), y: largest M
@@ -34,10 +36,12 @@ uniform vec4 u_debugView; // x: view (DebugView in settings.h), y: largest M
 #define VIEW_ALBEDO     4
 #define VIEW_NORMALS    5
 #define VIEW_MATERIAL   6
-#define VIEW_M          7
-#define VIEW_W          8
-#define VIEW_HISTORY    9
-#define VIEW_GRID       10
+#define VIEW_EMISSION   7
+#define VIEW_OCCLUSION  8
+#define VIEW_M          9
+#define VIEW_W          10
+#define VIEW_HISTORY    11
+#define VIEW_GRID       12
 
 #define kSkyDepth 0.99999
 #define kMaxAccumulation 16.0 // see fs_restir_spatial.sc
@@ -108,11 +112,21 @@ void main()
 	}
 	else if (view == VIEW_NORMALS)
 	{
-		color = normalMetallic.rgb;
+		color = texture2DLod(s_shadingNormal, v_texcoord0, 0.0).rgb;
 	}
 	else if (view == VIEW_MATERIAL)
 	{
 		color = vec3(albedoRoughness.a, normalMetallic.a, 0.0);
+	}
+	else if (view == VIEW_EMISSION)
+	{
+		// Reinhard, so emitters stay visible whatever their strength.
+		vec3 emission = texture2DLod(s_emissive, v_texcoord0, 0.0).rgb;
+		color = toGamma(vec4(emission / (emission + vec3_splat(1.0)), 1.0)).rgb;
+	}
+	else if (view == VIEW_OCCLUSION)
+	{
+		color = vec3_splat(texture2DLod(s_emissive, v_texcoord0, 0.0).a);
 	}
 	else if (view == VIEW_M)
 	{
