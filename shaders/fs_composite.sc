@@ -94,7 +94,8 @@ void main()
 	float depth = texture2D(s_depth, v_texcoord0).x;
 	if (depth >= 0.99999)
 	{
-		gl_FragColor = vec4(0.125, 0.141, 0.169, 1.0);
+		// The background: the tone mapping pass gives it a fixed colour.
+		gl_FragColor = vec4_splat(0.0);
 		return;
 	}
 
@@ -127,7 +128,6 @@ void main()
 	// The GI target holds demodulated irradiance: multiply the diffuse albedo
 	// back in.
 	vec3 indirect = upsampleIndirect(v_texcoord0, position, normal) * albedo * (1.0 - metallic);
-	vec3 color = direct + indirect;
-	color = color / (color + vec3_splat(1.0));
-	gl_FragColor = vec4(toGamma(vec4(color, 1.0)).rgb, 1.0);
+	// Scene-referred: exposure and tone mapping follow in fs_tonemap.sc.
+	gl_FragColor = vec4(direct + indirect, 1.0);
 }

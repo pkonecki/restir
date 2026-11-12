@@ -142,6 +142,24 @@ SettingsWindowOutput drawSettingsWindow(const SettingsWindowInput& _input, Setti
 			_settings.worldSpaceReuse = reuse == 0;
 		}
 		ImGui::SetItemTooltip("Where reservoirs are reused from.");
+
+		ImGui::SeparatorText("Exposure");
+		ImGui::Combo("Tone mapper (T)", &_settings.tonemapper, kTonemapperNames, int(Tonemapper::Count));
+		ImGui::SetItemTooltip("How scene radiance is compressed into the display's range.");
+		ImGui::SliderFloat("Exposure", &_settings.exposureEv, -8.0f, 8.0f, "%+.1f EV", sliderFlags);
+		ImGui::SetItemTooltip(_settings.autoExposure
+			? "Compensation on top of auto exposure, in stops."
+			: "In stops: each one doubles the brightness.");
+		ImGui::Checkbox("Auto exposure", &_settings.autoExposure);
+		ImGui::SetItemTooltip("Bring the log-average luminance of the image to middle grey,\neasing in over time.");
+		if (_settings.autoExposure)
+		{
+			ImGui::SameLine();
+			ImGui::SetNextItemWidth(-FLT_MIN);
+			ImGui::SliderFloat("##adaptationSpeed", &_settings.adaptationSpeed, 0.1f, 10.0f, "adapt %.1f/s"
+				, sliderFlags | ImGuiSliderFlags_Logarithmic);
+			ImGui::SetItemTooltip("How fast the exposure follows the scene.");
+		}
 	}
 
 	if (ImGui::CollapsingHeader("Performance", ImGuiTreeNodeFlags_DefaultOpen))

@@ -62,7 +62,8 @@ constexpr uint8_t kGridFragmentStage = 11; // 11-13
 void Renderer::init(const Settings& _settings)
 {
 	bgfx::setViewClear(kGeometryView, BGFX_CLEAR_COLOR | BGFX_CLEAR_DEPTH, 0x000000ff, 1.0f, 0);
-	bgfx::setViewClear(kCompositeView, BGFX_CLEAR_COLOR, 0x20242bff, 1.0f, 0);
+	// Alpha 0 marks the background for the tone mapping pass.
+	bgfx::setViewClear(kCompositeView, BGFX_CLEAR_COLOR, 0x00000000, 1.0f, 0);
 
 	// The shadow faces must be rendered before the GI and composite passes.
 	const bgfx::ViewId viewOrder[] =
@@ -72,7 +73,7 @@ void Renderer::init(const Settings& _settings)
 		kGeometryView, kGridClearView, kGridInsertView, kTemporalView, kSpatialView,
 		kDenoiseViewBase + 0, kDenoiseViewBase + 1, kDenoiseViewBase + 2,
 		kDenoiseViewBase + 3, kDenoiseViewBase + 4, kDenoiseViewBase + 5,
-		kCompositeView, kUiView,
+		kCompositeView, kExposureView, kTonemapView, kUiView,
 	};
 	bgfx::setViewOrder(0, BX_COUNTOF(viewOrder), viewOrder);
 
@@ -121,6 +122,8 @@ void Renderer::init(const Settings& _settings)
 	m_shadowProgram = loadProgram("vs_shadow", "fs_shadow");
 	m_varianceProgram = loadProgram("vs_fullscreen", "fs_svgf_variance");
 	m_atrousProgram = loadProgram("vs_fullscreen", "fs_svgf_atrous");
+	m_exposureProgram = bgfx::createProgram(loadShader("cs_exposure"), true);
+	m_tonemapProgram = loadProgram("vs_fullscreen", "fs_tonemap");
 	m_lightPosition = bgfx::createUniform("u_lightPosition", bgfx::UniformType::Vec4);
 	m_lightColor = bgfx::createUniform("u_lightColor", bgfx::UniformType::Vec4);
 	m_cameraPosition = bgfx::createUniform("u_cameraPosition", bgfx::UniformType::Vec4);
@@ -155,6 +158,9 @@ void Renderer::init(const Settings& _settings)
 	m_gridInfoUniform = bgfx::createUniform("u_gridInfo", bgfx::UniformType::Vec4);
 	m_gridCameraUniform = bgfx::createUniform("u_gridCamera", bgfx::UniformType::Vec4);
 	m_restirOptionsUniform = bgfx::createUniform("u_restirOptions", bgfx::UniformType::Vec4);
+	m_hdrSampler = bgfx::createUniform("s_hdr", bgfx::UniformType::Sampler);
+	m_exposureAdaptUniform = bgfx::createUniform("u_exposureAdapt", bgfx::UniformType::Vec4);
+	m_tonemapUniform = bgfx::createUniform("u_tonemap", bgfx::UniformType::Vec4);
 
 	// Two hash grids, this frame's and last frame's, like the reservoirs
 	// they index. Their size does not depend on the resolution.
@@ -173,6 +179,13 @@ void Renderer::init(const Settings& _settings)
 		}
 	}
 
+	// Auto exposure keeps its adapted luminance on the GPU, from frame to frame.
+	m_exposureBuffer = bgfx::createDynamicIndexBuffer(4, BGFX_BUFFER_COMPUTE_READ_WRITE | BGFX_BUFFER_INDEX32);
+	if (!bgfx::isValid(m_exposureBuffer))
+	{
+		throw std::runtime_error("Failed to create the exposure buffer.");
+	}
+
 	BX_ASSERT(bgfx::isValid(m_geometryProgram), "Failed to load G-buffer shaders.");
 	BX_ASSERT(bgfx::isValid(m_temporalProgram), "Failed to load ReSTIR GI temporal shaders.");
 	BX_ASSERT(bgfx::isValid(m_spatialProgram), "Failed to load ReSTIR GI spatial shaders.");
@@ -182,6 +195,8 @@ void Renderer::init(const Settings& _settings)
 	BX_ASSERT(bgfx::isValid(m_shadowProgram), "Failed to load shadow shaders.");
 	BX_ASSERT(bgfx::isValid(m_varianceProgram), "Failed to load denoiser variance shaders.");
 	BX_ASSERT(bgfx::isValid(m_atrousProgram), "Failed to load denoiser filter shaders.");
+	BX_ASSERT(bgfx::isValid(m_exposureProgram), "Failed to load the auto exposure shader.");
+	BX_ASSERT(bgfx::isValid(m_tonemapProgram), "Failed to load tone mapping shaders.");
 	createShadowMap(_settings);
 }
 
@@ -193,6 +208,7 @@ void Renderer::shutdown()
 	destroyIfValid(m_whiteTexture);
 	destroyIfValid(m_fullscreenVbh);
 	destroyIfValid(m_fullscreenIbh);
+	destroyIfValid(m_exposureBuffer);
 	for (uint8_t idx = 0; idx < 2; ++idx)
 	{
 		destroyIfValid(m_gridChecksums[idx]);
@@ -204,6 +220,7 @@ void Renderer::shutdown()
 	{
 		m_geometryProgram, m_temporalProgram, m_spatialProgram, m_compositeProgram, m_shadowProgram,
 		m_varianceProgram, m_atrousProgram, m_gridClearProgram, m_gridInsertProgram,
+		m_exposureProgram, m_tonemapProgram,
 	};
 	for (bgfx::ProgramHandle& program : programs)
 	{
@@ -224,6 +241,7 @@ void Renderer::shutdown()
 		m_reservoirSampleSampler, m_reservoirReceiverSampler, m_reservoirNormalSampler,
 		m_gridInfoUniform, m_gridCameraUniform, m_restirOptionsUniform,
 		m_baseColorSampler, m_metallicRoughnessSampler, m_materialInfoUniform,
+		m_hdrSampler, m_exposureAdaptUniform, m_tonemapUniform,
 	};
 	for (bgfx::UniformHandle& uniform : uniforms)
 	{
@@ -259,6 +277,7 @@ void Renderer::setScene(const SceneMesh& _mesh, const SceneInfo& _info)
 
 	m_scene = _info;
 	m_historyValid = false;
+	m_exposureValid = false;
 }
 
 void Renderer::destroyScene()
@@ -592,7 +611,7 @@ void Renderer::render(const FrameInput& _input, const Settings& _settings)
 	bgfx::setMarker("Composite Pass");
 	bgfx::setViewName(kCompositeView, "Composite");
 	bgfx::setViewRect(kCompositeView, 0, 0, uint16_t(width), uint16_t(height));
-	bgfx::setViewFrameBuffer(kCompositeView, BGFX_INVALID_HANDLE);
+	bgfx::setViewFrameBuffer(kCompositeView, m_hdrFrameBuffer);
 	bgfx::setViewTransform(kCompositeView, nullptr, nullptr);
 	bgfx::setTexture(0, m_albedoSampler, m_gbufferAlbedo);
 	bgfx::setTexture(1, m_normalSampler, m_gbufferNormal);
@@ -611,6 +630,49 @@ void Renderer::render(const FrameInput& _input, const Settings& _settings)
 	setFullscreenGeometry();
 	bgfx::setState(BGFX_STATE_WRITE_RGB | BGFX_STATE_WRITE_A);
 	bgfx::submit(kCompositeView, m_compositeProgram);
+
+	// Auto exposure: measure the composite's output and adapt to it.
+	if (_settings.autoExposure)
+	{
+		bgfx::setMarker("Auto Exposure");
+		bgfx::setViewName(kExposureView, "Auto Exposure");
+		const float exposureAdapt[] =
+		{
+			1.0f - std::exp(-_settings.adaptationSpeed * _input.m_deltaTime),
+			m_exposureValid ? 0.0f : 1.0f,
+			0.0f,
+			0.0f,
+		};
+		bgfx::setTexture(0, m_hdrSampler, m_hdrTexture);
+		bgfx::setBuffer(1, m_exposureBuffer, bgfx::Access::ReadWrite);
+		bgfx::setUniform(m_exposureAdaptUniform, exposureAdapt);
+		bgfx::dispatch(kExposureView, m_exposureProgram, 1, 1, 1);
+		m_exposureValid = true;
+	}
+	else
+	{
+		// Turning it back on starts from the scene as it is then.
+		m_exposureValid = false;
+	}
+
+	bgfx::setMarker("Tone Mapping");
+	bgfx::setViewName(kTonemapView, "Tone Mapping");
+	bgfx::setViewRect(kTonemapView, 0, 0, uint16_t(width), uint16_t(height));
+	bgfx::setViewFrameBuffer(kTonemapView, BGFX_INVALID_HANDLE);
+	bgfx::setViewTransform(kTonemapView, nullptr, nullptr);
+	const float tonemap[] =
+	{
+		_settings.exposureEv,
+		_settings.autoExposure ? 1.0f : 0.0f,
+		float(_settings.tonemapper),
+		0.0f,
+	};
+	bgfx::setTexture(0, m_hdrSampler, m_hdrTexture);
+	bgfx::setBuffer(1, m_exposureBuffer, bgfx::Access::Read);
+	bgfx::setUniform(m_tonemapUniform, tonemap);
+	setFullscreenGeometry();
+	bgfx::setState(BGFX_STATE_WRITE_RGB | BGFX_STATE_WRITE_A);
+	bgfx::submit(kTonemapView, m_tonemapProgram);
 
 	bx::memCopy(m_previousViewProj, viewProjection, sizeof(m_previousViewProj));
 	m_previousEye = eye;
@@ -651,6 +713,7 @@ void Renderer::setFullscreenGeometry()
 void Renderer::destroyRenderTargets()
 {
 	destroyIfValid(m_gbuffer);
+	destroyIfValid(m_hdrFrameBuffer);
 	for (uint8_t idx = 0; idx < 2; ++idx)
 	{
 		destroyIfValid(m_reservoirFrameBuffers[idx]);
@@ -741,6 +804,9 @@ void Renderer::createRenderTargets(uint32_t _width, uint32_t _height, const Sett
 	};
 	m_gbuffer = bgfx::createFrameBuffer(BX_COUNTOF(gbufferTextures), gbufferTextures, true);
 
+	m_hdrTexture = createTarget(_width, _height, bgfx::TextureFormat::RGBA16F);
+	m_hdrFrameBuffer = bgfx::createFrameBuffer(1, &m_hdrTexture, true);
+
 	for (uint8_t idx = 0; idx < 2; ++idx)
 	{
 		// Per frame parity, the temporal pass writes the reservoirs (sample
@@ -775,7 +841,7 @@ void Renderer::createRenderTargets(uint32_t _width, uint32_t _height, const Sett
 		m_filterFrameBuffers[idx] = bgfx::createFrameBuffer(1, &m_filterTextures[idx], true);
 	}
 
-	if (!bgfx::isValid(m_gbuffer)
+	if (!bgfx::isValid(m_gbuffer) || !bgfx::isValid(m_hdrFrameBuffer)
 	||  !bgfx::isValid(m_reservoirFrameBuffers[0]) || !bgfx::isValid(m_reservoirFrameBuffers[1])
 	||  !bgfx::isValid(m_shadeFrameBuffers[0]) || !bgfx::isValid(m_shadeFrameBuffers[1])
 	||  !bgfx::isValid(m_filteredHistoryFrameBuffers[0]) || !bgfx::isValid(m_filteredHistoryFrameBuffers[1])

@@ -23,7 +23,9 @@ constexpr bgfx::ViewId kDenoiseViewBase = 9; // views 9-14: variance, then the a
 constexpr bgfx::ViewId kGridClearView = 15;
 constexpr bgfx::ViewId kGridInsertView = 16;
 constexpr bgfx::ViewId kSpatialView = 17;
-constexpr bgfx::ViewId kUiView = 18;         // the settings window, drawn over everything
+constexpr bgfx::ViewId kExposureView = 18;   // auto exposure (compute)
+constexpr bgfx::ViewId kTonemapView = 19;    // exposure and tone mapping, to the window
+constexpr bgfx::ViewId kUiView = 20;         // the settings window, drawn over everything
 
 // GPU timings in the performance section: the views of each group of passes.
 struct PassGroup
@@ -42,6 +44,7 @@ constexpr PassGroup kPassGroups[] =
 	{ "ReSTIR spatial",  kSpatialView,     kSpatialView },
 	{ "Denoiser",        kDenoiseViewBase, kDenoiseViewBase + 5 },
 	{ "Composite",       kCompositeView,   kCompositeView },
+	{ "Tone mapping",    kExposureView,    kTonemapView },
 };
 constexpr int kPassGroupCount = int(BX_COUNTOF(kPassGroups));
 
@@ -52,6 +55,7 @@ struct FrameInput
 	uint32_t m_height = 0;
 	CameraMatrices m_camera;
 	bx::Vec3 m_eye = { 0.0f, 0.0f, 0.0f };
+	float m_deltaTime = 0.0f; // seconds since the last frame, for the exposure adaptation
 };
 
 class Renderer
@@ -119,6 +123,13 @@ private:
 	bx::Vec3 m_previousEye = { 0.0f, 0.0f, 0.0f };
 	uint32_t m_frameNumber = 0;
 
+	// The composite's scene-referred output, tone mapped to the window, and
+	// the adapted log2 luminance of auto exposure.
+	bgfx::TextureHandle m_hdrTexture = BGFX_INVALID_HANDLE;
+	bgfx::FrameBufferHandle m_hdrFrameBuffer = BGFX_INVALID_HANDLE;
+	bgfx::DynamicIndexBufferHandle m_exposureBuffer = BGFX_INVALID_HANDLE;
+	bool m_exposureValid = false; // false: jump to the next frame's luminance
+
 	// Denoiser targets.
 	bgfx::TextureHandle m_filteredHistory[2] = { BGFX_INVALID_HANDLE, BGFX_INVALID_HANDLE };
 	bgfx::FrameBufferHandle m_filteredHistoryFrameBuffers[2] = { BGFX_INVALID_HANDLE, BGFX_INVALID_HANDLE };
@@ -145,6 +156,8 @@ private:
 	bgfx::ProgramHandle m_atrousProgram = BGFX_INVALID_HANDLE;
 	bgfx::ProgramHandle m_gridClearProgram = BGFX_INVALID_HANDLE;
 	bgfx::ProgramHandle m_gridInsertProgram = BGFX_INVALID_HANDLE;
+	bgfx::ProgramHandle m_exposureProgram = BGFX_INVALID_HANDLE;
+	bgfx::ProgramHandle m_tonemapProgram = BGFX_INVALID_HANDLE;
 
 	// Uniforms and samplers.
 	bgfx::UniformHandle m_lightPosition = BGFX_INVALID_HANDLE;
@@ -181,4 +194,7 @@ private:
 	bgfx::UniformHandle m_gridInfoUniform = BGFX_INVALID_HANDLE;
 	bgfx::UniformHandle m_gridCameraUniform = BGFX_INVALID_HANDLE;
 	bgfx::UniformHandle m_restirOptionsUniform = BGFX_INVALID_HANDLE;
+	bgfx::UniformHandle m_hdrSampler = BGFX_INVALID_HANDLE;
+	bgfx::UniformHandle m_exposureAdaptUniform = BGFX_INVALID_HANDLE;
+	bgfx::UniformHandle m_tonemapUniform = BGFX_INVALID_HANDLE;
 };

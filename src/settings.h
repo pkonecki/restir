@@ -28,6 +28,28 @@ constexpr uint16_t kShadowFaceSizes[] = { 256, 512, 1024, 2048 };
 // Denoiser a-trous iterations, with tap spacings 1, 2, 4, 8, 16.
 constexpr int kMaxAtrousIterations = 5;
 
+// Tone mapping operators, in the order the settings window lists them.
+// Keep in sync with shaders/tonemap.sh.
+enum class Tonemapper : int
+{
+	Aces,
+	Agx,
+	Neutral,
+	Reinhard,
+	Clamp,
+	Count
+};
+
+constexpr const char* kTonemapperNames[] =
+{
+	"ACES (fitted)",
+	"AgX",
+	"Khronos PBR Neutral",
+	"Reinhard",
+	"None (clamp)",
+};
+static_assert(BX_COUNTOF(kTonemapperNames) == size_t(Tonemapper::Count));
+
 // The point light. Its position is reset to the scene's default (see
 // describeScene) whenever a model is loaded.
 struct LightSettings
@@ -50,6 +72,12 @@ struct Settings
 	bool denoiser = true;
 	bool worldSpaceReuse = true;
 	bool vsync = true;
+
+	// Exposure and tone mapping.
+	int tonemapper = int(Tonemapper::Agx);
+	float exposureEv = 0.0f;      // manual exposure, or compensation on top of auto exposure
+	bool autoExposure = false;
+	float adaptationSpeed = 1.5f; // per second: how fast auto exposure follows the scene
 
 	// Performance levers.
 	int giResolution = 1;     // index into kGiResolutions

@@ -97,9 +97,14 @@ sections:
 - **Rendering**: multiple bounces (B), shadows (H), the denoiser (N), and
   whether reservoirs are reused through the world-space hash grid or from
   screen-space neighbourhoods (G).
+  Below them, the exposure: the tone mapper (T cycles through AgX, the
+  default, fitted ACES, Khronos PBR Neutral, Reinhard and a plain clamp), the
+  exposure in stops, and auto exposure, which brings the log-average
+  luminance of the image to middle grey, easing in at the chosen speed (the
+  exposure slider then compensates on top of it).
 - **Performance**: frames per second with a frame time plot, and the GPU time
   of each group of passes (shadow map, G-buffer, hash grid, ReSTIR temporal
-  and spatial, denoiser, composite), measured with bgfx's per-view profiler.
+  and spatial, denoiser, composite, tone mapping), measured with bgfx's per-view profiler.
   They need GPU timer queries; WebGPU offers them only in browsers that expose
   `timestamp-query`. Below them are the levers that trade quality for speed:
 
@@ -252,7 +257,11 @@ With multiple bounces enabled, a sample point is shaded with its direct light
 plus the indirect light that left it in the previous frame, read back from
 the denoised history. Each frame thus adds one bounce, and the lighting
 converges to all bounces within a few frames. The composite pass upsamples the
-result with a geometry-aware filter and adds direct PBR lighting.
+result with a geometry-aware filter and adds direct PBR lighting, into a
+16-bit float target. Auto exposure (`shaders/cs_exposure.sc`, one compute
+group) averages the log luminance of 64x64 samples of it, and the tone
+mapping pass (`shaders/fs_tonemap.sc`, operators in `shaders/tonemap.sh`)
+applies the exposure and the tone mapper on the way to the window.
 
 Known limits: rays only see the depth buffer, so off-screen, occluded and
 back-facing geometry cannot contribute, which also caps the extra bounces. For

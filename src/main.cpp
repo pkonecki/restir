@@ -177,6 +177,7 @@ public:
 		frame.m_height = m_height;
 		frame.m_camera = m_camera.matrices(float(m_width) / float(m_height), m_scene.m_center, m_scene.m_radius);
 		frame.m_eye = m_camera.eye();
+		frame.m_deltaTime = m_deltaTime;
 		m_renderer.render(frame, m_settings);
 
 		bgfx::setMarker("Present");
@@ -222,6 +223,10 @@ private:
 		if (keyPressed(entry::Key::KeyM, m_modelKeyDown) && m_modelPaths.size() > 1)
 		{
 			switchModel((m_modelIndex + 1) % m_modelPaths.size());
+		}
+		if (keyPressed(entry::Key::KeyT, m_tonemapKeyDown))
+		{
+			m_settings.tonemapper = (m_settings.tonemapper + 1) % int(Tonemapper::Count);
 		}
 		if (keyPressed(entry::Key::KeyL, m_lightKeyDown))
 		{
@@ -334,6 +339,7 @@ private:
 	bool m_gridKeyDown = false;
 	bool m_modelKeyDown = false;
 	bool m_lightKeyDown = false;
+	bool m_tonemapKeyDown = false;
 
 	int64_t m_lastFrameTime = 0;
 	float m_deltaTime = 0.0f; // seconds since the last frame, at most 0.1
