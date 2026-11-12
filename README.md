@@ -97,6 +97,12 @@ sections:
 - **Rendering**: multiple bounces (B), shadows (H), the denoiser (N), and
   whether reservoirs are reused through the world-space hash grid or from
   screen-space neighbourhoods (G).
+  The view (V cycles through them) shows the final image or a debug view:
+  direct light only, indirect light only, or the GI irradiance before the
+  albedo is multiplied in (tone mapped like the final image); or, as plain
+  colours, the G-buffer's base colour, normals, roughness and metallic, each
+  pixel's reservoir M and W and GI history length (heat maps), and the
+  world-space hash grid's cells. The tooltip says how to read each one.
   Below them, the exposure: the tone mapper (T cycles through AgX, the
   default, fitted ACES, Khronos PBR Neutral, Reinhard and a plain clamp), the
   exposure in stops, and auto exposure, which brings the log-average

@@ -18,6 +18,7 @@ uniform vec4 u_lightColor;
 uniform vec4 u_cameraPosition;
 uniform vec4 u_screenInfo; // xy: GI target size, zw: GI texel size
 uniform vec4 u_sceneInfo;  // x: scene scale (see renderer.cpp)
+uniform vec4 u_compositeOptions; // x: direct weight, y: indirect weight, z: 1 to multiply the albedo into the indirect light
 
 #define SHADOW_SAMPLER_STAGE 4
 #include "shadow.sh"
@@ -127,7 +128,9 @@ void main()
 	vec3 direct = (diffuseWeight * albedo / kPi + specular) * radiance * normalLight * visibility;
 	// The GI target holds demodulated irradiance: multiply the diffuse albedo
 	// back in.
-	vec3 indirect = upsampleIndirect(v_texcoord0, position, normal) * albedo * (1.0 - metallic);
+	// (The debug view of irradiance leaves it out.)
+	vec3 indirect = upsampleIndirect(v_texcoord0, position, normal)
+		* (u_compositeOptions.z > 0.5 ? albedo * (1.0 - metallic) : vec3_splat(1.0));
 	// Scene-referred: exposure and tone mapping follow in fs_tonemap.sc.
-	gl_FragColor = vec4(direct + indirect, 1.0);
+	gl_FragColor = vec4(direct * u_compositeOptions.x + indirect * u_compositeOptions.y, 1.0);
 }

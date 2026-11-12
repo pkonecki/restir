@@ -143,6 +143,9 @@ SettingsWindowOutput drawSettingsWindow(const SettingsWindowInput& _input, Setti
 		}
 		ImGui::SetItemTooltip("Where reservoirs are reused from.");
 
+		ImGui::Combo("View (V)", &_settings.debugView, kDebugViewNames, int(DebugView::Count));
+		ImGui::SetItemTooltip("%s", kDebugViewHelp[_settings.debugView]);
+
 		ImGui::SeparatorText("Exposure");
 		ImGui::Combo("Tone mapper (T)", &_settings.tonemapper, kTonemapperNames, int(Tonemapper::Count));
 		ImGui::SetItemTooltip("How scene radiance is compressed into the display's range.");

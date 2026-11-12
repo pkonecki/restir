@@ -158,6 +158,7 @@ private:
 	bgfx::ProgramHandle m_gridInsertProgram = BGFX_INVALID_HANDLE;
 	bgfx::ProgramHandle m_exposureProgram = BGFX_INVALID_HANDLE;
 	bgfx::ProgramHandle m_tonemapProgram = BGFX_INVALID_HANDLE;
+	bgfx::ProgramHandle m_debugProgram = BGFX_INVALID_HANDLE;
 
 	// Uniforms and samplers.
 	bgfx::UniformHandle m_lightPosition = BGFX_INVALID_HANDLE;
@@ -197,4 +198,6 @@ private:
 	bgfx::UniformHandle m_hdrSampler = BGFX_INVALID_HANDLE;
 	bgfx::UniformHandle m_exposureAdaptUniform = BGFX_INVALID_HANDLE;
 	bgfx::UniformHandle m_tonemapUniform = BGFX_INVALID_HANDLE;
+	bgfx::UniformHandle m_debugViewUniform = BGFX_INVALID_HANDLE;
+	bgfx::UniformHandle m_compositeOptionsUniform = BGFX_INVALID_HANDLE;
 };

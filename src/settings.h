@@ -50,6 +50,57 @@ constexpr const char* kTonemapperNames[] =
 };
 static_assert(BX_COUNTOF(kTonemapperNames) == size_t(Tonemapper::Count));
 
+// What the window shows. The first four are lighting, tone mapped like the
+// final image; the others are data, shown as display colours. Keep in sync
+// with shaders/fs_debug.sc.
+enum class DebugView : int
+{
+	Final,
+	DirectLight,
+	IndirectLight,
+	Irradiance,
+	Albedo,
+	Normals,
+	RoughnessMetallic,
+	ReservoirCount,
+	ReservoirWeight,
+	HistoryLength,
+	HashGridCells,
+	Count
+};
+
+constexpr const char* kDebugViewNames[] =
+{
+	"Final image",
+	"Direct light only",
+	"Indirect light only",
+	"GI irradiance",
+	"Base colour",
+	"Normals",
+	"Roughness (R), metallic (G)",
+	"Reservoir M",
+	"Reservoir W",
+	"History length",
+	"Hash grid cells",
+};
+static_assert(BX_COUNTOF(kDebugViewNames) == size_t(DebugView::Count));
+
+constexpr const char* kDebugViewHelp[] =
+{
+	"The composited, tone mapped image.",
+	"The point light's direct lighting (PBR, shadowed), without GI.",
+	"The ReSTIR GI result alone, times the diffuse albedo.",
+	"The denoised GI before the albedo is multiplied in (demodulated),\nat GI resolution, upsampled.",
+	"The G-buffer's base colour.",
+	"The G-buffer's world-space normals, as colours.",
+	"The G-buffer's roughness in red and metallic in green.",
+	"Candidates behind each pixel's reservoir after the temporal pass,\nfrom 0 (blue) to the most it can reach (red).",
+	"Unbiased contribution weight of each pixel's reservoir, on a log\nscale from 2^-8 (blue) to 2^8 (red); black where it is zero.",
+	"Frames accumulated in each pixel's GI estimate, from 1 (blue: just\ndisoccluded, history rejected) to 16 (red).",
+	"A colour per world-space hash grid cell (without the lookup jitter),\nbrighter when it lists more reservoirs, grey when empty.",
+};
+static_assert(BX_COUNTOF(kDebugViewHelp) == size_t(DebugView::Count));
+
 // The point light. Its position is reset to the scene's default (see
 // describeScene) whenever a model is loaded.
 struct LightSettings
@@ -72,6 +123,8 @@ struct Settings
 	bool denoiser = true;
 	bool worldSpaceReuse = true;
 	bool vsync = true;
+
+	int debugView = int(DebugView::Final);
 
 	// Exposure and tone mapping.
 	int tonemapper = int(Tonemapper::Agx);

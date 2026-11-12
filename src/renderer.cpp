@@ -53,6 +53,9 @@ constexpr uint32_t kGridCellCapacity = 32;
 constexpr float kGridMinCellSize = 0.02f; // for the reference scene, scaled with the scene
 constexpr float kGridCellPixels = 6.0f;   // cell size, in GI pixels, that the grid aims for
 
+// Cap on the M of every reused reservoir (kMaxHistory in shaders/restir.sh).
+constexpr int kMaxReusedHistory = 20;
+
 // Buffer stages of the grid, in the compute passes and in the GI passes.
 constexpr uint8_t kGridComputeStage = 0;  // 0-2
 constexpr uint8_t kGridFragmentStage = 11; // 11-13
@@ -124,6 +127,7 @@ void Renderer::init(const Settings& _settings)
 	m_atrousProgram = loadProgram("vs_fullscreen", "fs_svgf_atrous");
 	m_exposureProgram = bgfx::createProgram(loadShader("cs_exposure"), true);
 	m_tonemapProgram = loadProgram("vs_fullscreen", "fs_tonemap");
+	m_debugProgram = loadProgram("vs_fullscreen", "fs_debug");
 	m_lightPosition = bgfx::createUniform("u_lightPosition", bgfx::UniformType::Vec4);
 	m_lightColor = bgfx::createUniform("u_lightColor", bgfx::UniformType::Vec4);
 	m_cameraPosition = bgfx::createUniform("u_cameraPosition", bgfx::UniformType::Vec4);
@@ -161,6 +165,8 @@ void Renderer::init(const Settings& _settings)
 	m_hdrSampler = bgfx::createUniform("s_hdr", bgfx::UniformType::Sampler);
 	m_exposureAdaptUniform = bgfx::createUniform("u_exposureAdapt", bgfx::UniformType::Vec4);
 	m_tonemapUniform = bgfx::createUniform("u_tonemap", bgfx::UniformType::Vec4);
+	m_debugViewUniform = bgfx::createUniform("u_debugView", bgfx::UniformType::Vec4);
+	m_compositeOptionsUniform = bgfx::createUniform("u_compositeOptions", bgfx::UniformType::Vec4);
 
 	// Two hash grids, this frame's and last frame's, like the reservoirs
 	// they index. Their size does not depend on the resolution.
@@ -197,6 +203,7 @@ void Renderer::init(const Settings& _settings)
 	BX_ASSERT(bgfx::isValid(m_atrousProgram), "Failed to load denoiser filter shaders.");
 	BX_ASSERT(bgfx::isValid(m_exposureProgram), "Failed to load the auto exposure shader.");
 	BX_ASSERT(bgfx::isValid(m_tonemapProgram), "Failed to load tone mapping shaders.");
+	BX_ASSERT(bgfx::isValid(m_debugProgram), "Failed to load debug view shaders.");
 	createShadowMap(_settings);
 }
 
@@ -220,7 +227,7 @@ void Renderer::shutdown()
 	{
 		m_geometryProgram, m_temporalProgram, m_spatialProgram, m_compositeProgram, m_shadowProgram,
 		m_varianceProgram, m_atrousProgram, m_gridClearProgram, m_gridInsertProgram,
-		m_exposureProgram, m_tonemapProgram,
+		m_exposureProgram, m_tonemapProgram, m_debugProgram,
 	};
 	for (bgfx::ProgramHandle& program : programs)
 	{
@@ -242,6 +249,7 @@ void Renderer::shutdown()
 		m_gridInfoUniform, m_gridCameraUniform, m_restirOptionsUniform,
 		m_baseColorSampler, m_metallicRoughnessSampler, m_materialInfoUniform,
 		m_hdrSampler, m_exposureAdaptUniform, m_tonemapUniform,
+		m_debugViewUniform, m_compositeOptionsUniform,
 	};
 	for (bgfx::UniformHandle& uniform : uniforms)
 	{
@@ -613,26 +621,66 @@ void Renderer::render(const FrameInput& _input, const Settings& _settings)
 	bgfx::setViewRect(kCompositeView, 0, 0, uint16_t(width), uint16_t(height));
 	bgfx::setViewFrameBuffer(kCompositeView, m_hdrFrameBuffer);
 	bgfx::setViewTransform(kCompositeView, nullptr, nullptr);
-	bgfx::setTexture(0, m_albedoSampler, m_gbufferAlbedo);
-	bgfx::setTexture(1, m_normalSampler, m_gbufferNormal);
-	bgfx::setTexture(2, m_depthSampler, m_gbufferDepth);
-	bgfx::setTexture(3, m_giSampler, denoised);
-	bgfx::setTexture(4, m_shadowSampler, m_shadowMap);
-	bgfx::setUniform(m_shadowViewProjUniform, shadowViewProj, 6);
-	bgfx::setUniform(m_shadowInfoUniform, shadowInfo);
-	bgfx::setUniform(m_shadowOptionsUniform, shadowOptions);
-	bgfx::setUniform(m_inverseViewProjection, inverseViewProjection);
-	bgfx::setUniform(m_lightPosition, lightPosition);
-	bgfx::setUniform(m_lightColor, lightColor);
-	bgfx::setUniform(m_cameraPosition, cameraPosition);
-	bgfx::setUniform(m_screenInfo, screenInfo);
-	bgfx::setUniform(m_sceneInfoUniform, sceneInfo);
-	setFullscreenGeometry();
-	bgfx::setState(BGFX_STATE_WRITE_RGB | BGFX_STATE_WRITE_A);
-	bgfx::submit(kCompositeView, m_compositeProgram);
+	const DebugView debugView = DebugView(_settings.debugView);
+	const bool dataView = debugView >= DebugView::Albedo;
+	if (dataView)
+	{
+		// Data views replace the composite with display colours.
+		const float debugInfo[] =
+		{
+			float(_settings.debugView),
+			float(_settings.initialCandidates + _settings.temporalTaps * kMaxReusedHistory),
+			0.0f,
+			0.0f,
+		};
+		bgfx::setTexture(0, m_albedoSampler, m_gbufferAlbedo);
+		bgfx::setTexture(1, m_normalSampler, m_gbufferNormal);
+		bgfx::setTexture(2, m_depthSampler, m_gbufferDepth);
+		bgfx::setTexture(3, m_reservoirSampleSampler, m_historySample[historyWrite]);
+		bgfx::setTexture(4, m_reservoirReceiverSampler, m_historyReceiver[historyWrite]);
+		bgfx::setTexture(5, m_giMomentsSampler, m_historyMoments[historyWrite]);
+		setGrid(currentGrid);
+		bgfx::setUniform(m_inverseViewProjection, inverseViewProjection);
+		bgfx::setUniform(m_gridInfoUniform, gridInfo);
+		bgfx::setUniform(m_gridCameraUniform, cameraPosition);
+		bgfx::setUniform(m_debugViewUniform, debugInfo);
+		setFullscreenGeometry();
+		bgfx::setState(BGFX_STATE_WRITE_RGB | BGFX_STATE_WRITE_A);
+		bgfx::submit(kCompositeView, m_debugProgram);
+	}
+	else
+	{
+		// The lighting views keep only part of the light.
+		const float compositeOptions[] =
+		{
+			debugView == DebugView::Final || debugView == DebugView::DirectLight ? 1.0f : 0.0f,
+			debugView == DebugView::DirectLight ? 0.0f : 1.0f,
+			debugView == DebugView::Irradiance ? 0.0f : 1.0f,
+			0.0f,
+		};
+		bgfx::setUniform(m_compositeOptionsUniform, compositeOptions);
+		bgfx::setTexture(0, m_albedoSampler, m_gbufferAlbedo);
+		bgfx::setTexture(1, m_normalSampler, m_gbufferNormal);
+		bgfx::setTexture(2, m_depthSampler, m_gbufferDepth);
+		bgfx::setTexture(3, m_giSampler, denoised);
+		bgfx::setTexture(4, m_shadowSampler, m_shadowMap);
+		bgfx::setUniform(m_shadowViewProjUniform, shadowViewProj, 6);
+		bgfx::setUniform(m_shadowInfoUniform, shadowInfo);
+		bgfx::setUniform(m_shadowOptionsUniform, shadowOptions);
+		bgfx::setUniform(m_inverseViewProjection, inverseViewProjection);
+		bgfx::setUniform(m_lightPosition, lightPosition);
+		bgfx::setUniform(m_lightColor, lightColor);
+		bgfx::setUniform(m_cameraPosition, cameraPosition);
+		bgfx::setUniform(m_screenInfo, screenInfo);
+		bgfx::setUniform(m_sceneInfoUniform, sceneInfo);
+		setFullscreenGeometry();
+		bgfx::setState(BGFX_STATE_WRITE_RGB | BGFX_STATE_WRITE_A);
+		bgfx::submit(kCompositeView, m_compositeProgram);
+	}
 
-	// Auto exposure: measure the composite's output and adapt to it.
-	if (_settings.autoExposure)
+	// Auto exposure: measure the composite's output and adapt to it. A data
+	// view replaces that output, so the exposure holds still meanwhile.
+	if (_settings.autoExposure && !dataView)
 	{
 		bgfx::setMarker("Auto Exposure");
 		bgfx::setViewName(kExposureView, "Auto Exposure");
@@ -649,7 +697,7 @@ void Renderer::render(const FrameInput& _input, const Settings& _settings)
 		bgfx::dispatch(kExposureView, m_exposureProgram, 1, 1, 1);
 		m_exposureValid = true;
 	}
-	else
+	else if (!_settings.autoExposure)
 	{
 		// Turning it back on starts from the scene as it is then.
 		m_exposureValid = false;
@@ -665,7 +713,7 @@ void Renderer::render(const FrameInput& _input, const Settings& _settings)
 		_settings.exposureEv,
 		_settings.autoExposure ? 1.0f : 0.0f,
 		float(_settings.tonemapper),
-		0.0f,
+		dataView ? 1.0f : 0.0f,
 	};
 	bgfx::setTexture(0, m_hdrSampler, m_hdrTexture);
 	bgfx::setBuffer(1, m_exposureBuffer, bgfx::Access::Read);

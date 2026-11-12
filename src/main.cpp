@@ -224,6 +224,10 @@ private:
 		{
 			switchModel((m_modelIndex + 1) % m_modelPaths.size());
 		}
+		if (keyPressed(entry::Key::KeyV, m_viewKeyDown))
+		{
+			m_settings.debugView = (m_settings.debugView + 1) % int(DebugView::Count);
+		}
 		if (keyPressed(entry::Key::KeyT, m_tonemapKeyDown))
 		{
 			m_settings.tonemapper = (m_settings.tonemapper + 1) % int(Tonemapper::Count);
@@ -340,6 +344,7 @@ private:
 	bool m_modelKeyDown = false;
 	bool m_lightKeyDown = false;
 	bool m_tonemapKeyDown = false;
+	bool m_viewKeyDown = false;
 
 	int64_t m_lastFrameTime = 0;
 	float m_deltaTime = 0.0f; // seconds since the last frame, at most 0.1
