@@ -184,6 +184,27 @@ SettingsWindowOutput drawSettingsWindow(const SettingsWindowInput& _input, Setti
 		}
 	}
 
+	if (ImGui::CollapsingHeader("Sky", ImGuiTreeNodeFlags_DefaultOpen))
+	{
+		SkySettings& sky = _settings.sky;
+		ImGui::Checkbox("Sky (K)", &sky.enabled);
+		ImGui::SetItemTooltip("Light from a sky gradient, through GI rays the BVH confirms leave\nthe scene (so not with depth buffer rays only), and shown behind it.");
+		if (sky.enabled)
+		{
+			ImGui::SameLine();
+			ImGui::SetNextItemWidth(-FLT_MIN);
+			ImGui::SliderFloat("##skyIntensity", &sky.intensity, 0.01f, 20.0f, "intensity %.2f"
+				, sliderFlags | ImGuiSliderFlags_Logarithmic);
+			ImGui::ColorEdit3("Zenith", sky.zenith, ImGuiColorEditFlags_Float);
+			ImGui::ColorEdit3("Horizon", sky.horizon, ImGuiColorEditFlags_Float);
+			ImGui::ColorEdit3("Ground", sky.ground, ImGuiColorEditFlags_Float);
+			if (_settings.rayMode == int(RayMode::ScreenSpace))
+			{
+				ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.3f, 1.0f), "Depth buffer rays cannot reach the sky.");
+			}
+		}
+	}
+
 	if (ImGui::CollapsingHeader("Rendering", ImGuiTreeNodeFlags_DefaultOpen))
 	{
 		ImGui::Checkbox("Multiple bounces (B)", &_settings.multipleBounces);

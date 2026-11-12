@@ -81,6 +81,13 @@ void main()
 				hitPosition = rayOrigin + direction * hitDistance;
 				hitId = encodeSampleId(triangleIndex, direction);
 			}
+			else if (skyEnabled())
+			{
+				// Nothing in the scene: the sky, in this direction.
+				hit = true;
+				hitPosition = direction;
+				hitId = kSkySampleId;
+			}
 		}
 		if (!hit)
 		{
@@ -102,10 +109,13 @@ void main()
 		// cosine at the hit point cancels). Taking the cosine from the
 		// receiver instead overstates the density of nearby hits, darkening
 		// every fresh sample a little, most along corners.
+		// A direction to the sky is the same from both points.
 		vec3 fromReceiver = hitPosition - position;
 		vec3 fromOrigin = hitPosition - rayOrigin;
-		float sourcePdf = dot(normal, direction) / kPi
-			* dot(fromReceiver, fromReceiver) / max(dot(fromOrigin, fromOrigin), kMinDistanceSquared * 0.01);
+		float sourcePdf = isSkySample(hitId)
+			? dot(normal, direction) / kPi
+			: dot(normal, direction) / kPi
+				* dot(fromReceiver, fromReceiver) / max(dot(fromOrigin, fromOrigin), kMinDistanceSquared * 0.01);
 		if (target > 0.0 && sourcePdf > 0.0001)
 		{
 			updateReservoir(canonical, contribution, hitPosition, hitNormal, hitId, target, target / sourcePdf, randomSelect);

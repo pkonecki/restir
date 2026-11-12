@@ -5,6 +5,7 @@
 #include "bgfx_utils.h"
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -183,6 +184,9 @@ void Renderer::init(const Settings& _settings)
 	m_emissiveSampler = bgfx::createUniform("s_emissive", bgfx::UniformType::Sampler);
 	m_shadingNormalSampler = bgfx::createUniform("s_shadingNormal", bgfx::UniformType::Sampler);
 	m_bvhInfoUniform = bgfx::createUniform("u_bvhInfo", bgfx::UniformType::Vec4);
+	m_skyZenithUniform = bgfx::createUniform("u_skyZenith", bgfx::UniformType::Vec4);
+	m_skyHorizonUniform = bgfx::createUniform("u_skyHorizon", bgfx::UniformType::Vec4);
+	m_skyGroundUniform = bgfx::createUniform("u_skyGround", bgfx::UniformType::Vec4);
 	m_compositeOptionsUniform = bgfx::createUniform("u_compositeOptions", bgfx::UniformType::Vec4);
 
 	// Two hash grids, this frame's and last frame's, like the reservoirs
@@ -269,6 +273,7 @@ void Renderer::shutdown()
 		m_normalMapSampler, m_occlusionSampler, m_emissiveMapSampler,
 		m_materialEmissiveUniform, m_materialFactorsUniform,
 		m_emissiveSampler, m_shadingNormalSampler, m_bvhInfoUniform,
+		m_skyZenithUniform, m_skyHorizonUniform, m_skyGroundUniform,
 		m_hdrSampler, m_exposureAdaptUniform, m_tonemapUniform,
 		m_debugViewUniform, m_compositeOptionsUniform,
 	};
@@ -536,6 +541,22 @@ void Renderer::render(const FrameInput& _input, const Settings& _settings)
 		, uint32_t(giWidth + 7) / 8, uint32_t(giHeight + 7) / 8, 1);
 
 	// Uniforms and textures both GI passes use (see shaders/restir.sh).
+	// The sky's colours, premultiplied by its intensity.
+	const SkySettings& sky = _settings.sky;
+	const auto skyColor = [&sky](const float* _color, float _w)
+	{
+		return std::array<float, 4>{ _color[0] * sky.intensity, _color[1] * sky.intensity, _color[2] * sky.intensity, _w };
+	};
+	const std::array<float, 4> skyZenith = skyColor(sky.zenith, sky.enabled ? 1.0f : 0.0f);
+	const std::array<float, 4> skyHorizon = skyColor(sky.horizon, 0.0f);
+	const std::array<float, 4> skyGround = skyColor(sky.ground, 0.0f);
+	const auto setSkyUniforms = [&]()
+	{
+		bgfx::setUniform(m_skyZenithUniform, skyZenith.data());
+		bgfx::setUniform(m_skyHorizonUniform, skyHorizon.data());
+		bgfx::setUniform(m_skyGroundUniform, skyGround.data());
+	};
+
 	const float bvhInfo[] = { m_bvhInfo[0], m_bvhInfo[1], m_bvhInfo[2], float(_settings.rayMode) };
 	const auto setGiPassInputs = [&]()
 	{
@@ -564,6 +585,7 @@ void Renderer::render(const FrameInput& _input, const Settings& _settings)
 		bgfx::setUniform(m_restirOptionsUniform, restirOptions);
 		bgfx::setBuffer(kBvhStage, m_bvhBuffer, bgfx::Access::Read);
 		bgfx::setUniform(m_bvhInfoUniform, bvhInfo);
+		setSkyUniforms();
 	};
 	const auto setGrid = [](const bgfx::DynamicIndexBufferHandle* _buffers)
 	{
@@ -730,6 +752,7 @@ void Renderer::render(const FrameInput& _input, const Settings& _settings)
 		bgfx::setUniform(m_cameraPosition, cameraPosition);
 		bgfx::setUniform(m_screenInfo, screenInfo);
 		bgfx::setUniform(m_sceneInfoUniform, sceneInfo);
+		setSkyUniforms();
 		setFullscreenGeometry();
 		bgfx::setState(BGFX_STATE_WRITE_RGB | BGFX_STATE_WRITE_A);
 		bgfx::submit(kCompositeView, m_compositeProgram);

@@ -151,13 +151,17 @@ void main()
 		// Where each pixel's reservoir sample came from, and how it is shaded
 		// now: black no sample (W = 0), blue found in the depth buffer, cyan
 		// found by the BVH and on a visible surface, orange found by the BVH
-		// and off screen or hidden (shaded from its triangle).
+		// and off screen or hidden (shaded from its triangle), white the sky.
 		float weight = texture2DLod(s_reservoirReceiver, v_texcoord0, 0.0).w;
 		vec3 samplePosition = texture2DLod(s_reservoirSample, v_texcoord0, 0.0).xyz;
 		float sampleId = texture2DLod(s_reservoirNormal, v_texcoord0, 0.0).w;
 		if (weight <= 0.0)
 		{
 			color = vec3_splat(0.0);
+		}
+		else if (sampleId > 15000000.0) // kSkySampleId in restir.sh
+		{
+			color = vec3_splat(0.95);
 		}
 		else if (abs(sampleId) < 0.5)
 		{

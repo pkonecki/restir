@@ -224,4 +224,7 @@ private:
 	bgfx::UniformHandle m_emissiveSampler = BGFX_INVALID_HANDLE;
 	bgfx::UniformHandle m_shadingNormalSampler = BGFX_INVALID_HANDLE;
 	bgfx::UniformHandle m_bvhInfoUniform = BGFX_INVALID_HANDLE;
+	bgfx::UniformHandle m_skyZenithUniform = BGFX_INVALID_HANDLE;
+	bgfx::UniformHandle m_skyHorizonUniform = BGFX_INVALID_HANDLE;
+	bgfx::UniformHandle m_skyGroundUniform = BGFX_INVALID_HANDLE;
 };

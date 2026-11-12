@@ -23,6 +23,12 @@
  * cube shadow map, its emission). So BVH samples survive going off screen or
  * behind other geometry, while depth buffer samples are dropped then.
  *
+ * A ray that the BVH confirms leaves the scene samples the sky. Its sample is
+ * a direction, not a point: the position holds the unit direction and the id
+ * is kSkySampleId. Sky samples are compared between receivers in solid angle
+ * (both see the same direction, so the shift's Jacobian is 1), where surface
+ * samples are compared per unit area at the sample point.
+ *
  * Emissive surfaces: a sample point on one adds its emitted radiance, so
  * emitters that are on screen light the scene through the same reservoirs.
  *
@@ -63,6 +69,7 @@ uniform vec4 u_restirOptions; // x: initial candidates, y: temporal taps, z: spa
 
 #define BVH_STAGE 15
 #include "bvh.sh"
+#include "sky.sh"
 
 #define GRID_READ_ONLY
 #define GRID_CHECKSUM_STAGE 11
@@ -219,6 +226,14 @@ vec3 evaluateWorldDirect(vec3 _albedo, vec3 _position, vec3 _normal)
 	float normalLight = max(dot(_normal, toLight * inversesqrt(distanceSquared)), 0.0);
 	return _albedo * (u_lightColor.rgb / distanceSquared) * (normalLight / kPi)
 		* (normalLight > 0.0 ? lightVisibility(_position, _normal, 1) : 0.0);
+}
+
+// Larger than any triangle id (+-(t + 1), t < 2^24).
+#define kSkySampleId 30000000.0
+
+bool isSkySample(float _sampleId)
+{
+	return _sampleId > kSkySampleId * 0.5;
 }
 
 // Encodes the triangle a BVH ray hit, and the side the ray came from.
@@ -400,6 +415,15 @@ bool evaluateSample(
 	_contribution = vec3_splat(0.0);
 	_sampleNormal = vec3(0.0, 0.0, 1.0);
 
+	// The sky, in the stored direction. Its visibility is tested separately.
+	if (isSkySample(_sampleId))
+	{
+		_sampleNormal = -_samplePosition;
+		_contribution = _receiverAlbedo * skyRadiance(_samplePosition)
+			* (max(dot(_receiverNormal, _samplePosition), 0.0) / kPi);
+		return skyEnabled();
+	}
+
 	// A visible surface: shade it from the G-buffer.
 	bool visibleSurface = false;
 	vec2 sampleUv;
@@ -461,8 +485,15 @@ bool evaluateSample(
 // and a sample point. Multiplying a solid-angle density at the receiver by it
 // gives the density per unit area at the sample point, a measure that every
 // receiver shares. Zero when the two surfaces do not face each other.
-float geometryTerm(vec3 _receiverPosition, vec3 _receiverNormal, vec3 _samplePosition, vec3 _sampleNormal)
+// For a sky sample, just the cosine at the receiver: the density in solid
+// angle, which receivers share for a direction.
+float geometryTerm(vec3 _receiverPosition, vec3 _receiverNormal, vec3 _samplePosition, vec3 _sampleNormal, float _sampleId)
 {
+	if (isSkySample(_sampleId))
+	{
+		return max(dot(_receiverNormal, _samplePosition), 0.0);
+	}
+
 	vec3 offset = _samplePosition - _receiverPosition;
 	float distanceSquared = dot(offset, offset);
 	if (distanceSquared < kMinDistanceSquared * 0.01)
@@ -479,18 +510,26 @@ float geometryTerm(vec3 _receiverPosition, vec3 _receiverNormal, vec3 _samplePos
 }
 
 // Visibility between a receiver and a sample point: through the BVH when
-// every ray uses it, through the depth buffer otherwise.
-bool isVisible(vec3 _receiverPosition, vec3 _receiverNormal, vec3 _samplePosition)
+// every ray uses it, through the depth buffer otherwise. The sky is tested
+// through the BVH whenever there is one: the depth buffer cannot tell that
+// nothing lies off screen in that direction.
+bool isVisible(vec3 _receiverPosition, vec3 _receiverNormal, vec3 _samplePosition, float _sampleId)
 {
 	vec3 origin = _receiverPosition + _receiverNormal * kRayBias;
-	vec3 toSample = _samplePosition - origin;
+	bool sky = isSkySample(_sampleId);
+	vec3 toSample = sky ? _samplePosition * kMaxBvhRayDistance : _samplePosition - origin;
 	float sampleDistance = length(toSample);
 	vec3 direction = toSample / max(sampleDistance, 0.0001);
 
 	// A single return: the D3D compiler reports a potentially uninitialised
 	// return value when an early return follows a loop-heavy call.
 	bool visible = true;
-	if (kRayMode == RAY_MODE_BVH && bvhAvailable())
+	if (sky)
+	{
+		float occluderDistance = 0.0;
+		visible = bvhAvailable() && traceBvh(origin, direction, kMaxBvhRayDistance, true, occluderDistance) < 0;
+	}
+	else if (kRayMode == RAY_MODE_BVH && bvhAvailable())
 	{
 		float occluderDistance = 0.0;
 		visible = traceBvh(origin, direction, sampleDistance - kRayBias, true, occluderDistance) < 0;
@@ -518,8 +557,14 @@ bool isVisible(vec3 _receiverPosition, vec3 _receiverNormal, vec3 _samplePositio
 // as fast as the Jacobian grows, so their product stays bounded. Clamping it
 // (optional, for comparison) darkens wherever samples are reused across
 // large changes in distance or angle, such as near corners.
-float reconnectionJacobian(vec3 _here, vec3 _there, vec3 _samplePosition, vec3 _sampleNormal)
+float reconnectionJacobian(vec3 _here, vec3 _there, vec3 _samplePosition, vec3 _sampleNormal, float _sampleId)
 {
+	if (isSkySample(_sampleId))
+	{
+		// The same direction from every receiver.
+		return 1.0;
+	}
+
 	vec3 toHere = _here - _samplePosition;
 	vec3 toThere = _there - _samplePosition;
 	float hereSquared = max(dot(toHere, toHere), kMinDistanceSquared);
@@ -678,6 +723,7 @@ struct PairwiseMis
 	Reservoir combined;
 	vec3 canonicalPosition;
 	vec3 canonicalNormal;
+	float canonicalId;
 	float pairCanonical;     // M_c / k
 	float canonicalGeometry; // p_c of the canonical sample
 	float canonicalShare;    // sum over pairs of the canonical sample's MIS weight, times M_total
@@ -698,11 +744,12 @@ PairwiseMis beginPairwiseMis(
 	mis.combined = emptyReservoir();
 	mis.canonicalPosition = _canonical.position;
 	mis.canonicalNormal = _canonical.normal;
+	mis.canonicalId = _canonical.id;
 	mis.pairCanonical = _canonicalCount / float(max(_taps, 1));
 	mis.totalCount = _canonicalCount;
 	mis.hasCanonical = _canonical.target > 0.000001;
 	mis.canonicalGeometry = mis.hasCanonical
-		? geometryTerm(_position, _normal, _canonical.position, _canonical.normal)
+		? geometryTerm(_position, _normal, _canonical.position, _canonical.normal, _canonical.id)
 		: 0.0;
 	// Without neighbours, the canonical sample takes the whole weight.
 	mis.canonicalShare = _taps > 0 ? 0.0 : _canonicalCount;
@@ -732,9 +779,9 @@ void addNeighbour(
 	if (_mis.hasCanonical)
 	{
 		float neighbourGeometry = geometryTerm(
-			_neighbour.receiverPosition, _neighbour.receiverNormal, _mis.canonicalPosition, _mis.canonicalNormal);
+			_neighbour.receiverPosition, _neighbour.receiverNormal, _mis.canonicalPosition, _mis.canonicalNormal, _mis.canonicalId);
 		if (neighbourGeometry > 0.0
-		&&  !isVisible(_neighbour.receiverPosition, _neighbour.receiverNormal, _mis.canonicalPosition))
+		&&  !isVisible(_neighbour.receiverPosition, _neighbour.receiverNormal, _mis.canonicalPosition, _mis.canonicalId))
 		{
 			neighbourGeometry = 0.0;
 		}
@@ -755,10 +802,10 @@ void addNeighbour(
 	{
 		float target = luminance(contribution);
 		float jacobian = reconnectionJacobian(
-			_position, _neighbour.receiverPosition, _neighbour.samplePosition, sampleNormal);
-		float hereGeometry = geometryTerm(_position, _normal, _neighbour.samplePosition, sampleNormal);
+			_position, _neighbour.receiverPosition, _neighbour.samplePosition, sampleNormal, _neighbour.sampleId);
+		float hereGeometry = geometryTerm(_position, _normal, _neighbour.samplePosition, sampleNormal, _neighbour.sampleId);
 		float thereGeometry = geometryTerm(
-			_neighbour.receiverPosition, _neighbour.receiverNormal, _neighbour.samplePosition, sampleNormal);
+			_neighbour.receiverPosition, _neighbour.receiverNormal, _neighbour.samplePosition, sampleNormal, _neighbour.sampleId);
 		float neighbourDensity = neighbourCount * thereGeometry;
 		float denominator = neighbourDensity + _mis.pairCanonical * hereGeometry;
 		float misWeight = denominator > 0.0 ? pairWeight * neighbourDensity / denominator : 0.0;
@@ -798,7 +845,7 @@ float finishPairwiseMis(
 		? _mis.combined.weightSum / (_mis.totalCount * _mis.combined.target)
 		: 0.0;
 
-	if (combinedWeight > 0.0 && _mis.neighbourSelected && !isVisible(_position, _normal, _mis.combined.position))
+	if (combinedWeight > 0.0 && _mis.neighbourSelected && !isVisible(_position, _normal, _mis.combined.position, _mis.combined.id))
 	{
 		combinedWeight = 0.0;
 	}

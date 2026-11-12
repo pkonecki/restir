@@ -45,12 +45,15 @@ struct BundledModel
 	const char* m_path;
 	float m_cameraDistance; // in scene radii
 	float m_cameraYaw;      // radians, 0 = camera on +z
+	bool m_sky;             // whether the sky starts on (it does for other models)
 };
 
 constexpr BundledModel kBundledModels[] =
 {
-	{ "assets/cornell_box/scene.gltf", kInitialCameraDistance, kInitialCameraYaw },
-	{ "assets/sponza/Sponza.gltf",     0.45f,                  bx::kPiHalf },
+	// The Cornell box is a closed room lit from inside (its front is open, so
+	// a sky would flood it); Sponza is an open courtyard.
+	{ "assets/cornell_box/scene.gltf", kInitialCameraDistance, kInitialCameraYaw, false },
+	{ "assets/sponza/Sponza.gltf",     0.45f,                  bx::kPiHalf,       true  },
 };
 
 class ExampleRestirGi : public entry::AppI
@@ -305,6 +308,10 @@ private:
 		{
 			switchModel((m_modelIndex + 1) % m_modelPaths.size());
 		}
+		if (keyPressed(entry::Key::KeyK, m_skyKeyDown))
+		{
+			m_settings.sky.enabled = !m_settings.sky.enabled;
+		}
 		if (keyPressed(entry::Key::KeyR, m_rayKeyDown))
 		{
 			m_settings.rayMode = (m_settings.rayMode + 1) % int(RayMode::Count);
@@ -396,14 +403,17 @@ private:
 
 		float cameraDistance = kInitialCameraDistance;
 		float cameraYaw = kInitialCameraYaw;
+		bool sky = true;
 		for (const BundledModel& bundled : kBundledModels)
 		{
 			if (m_modelPaths[_index] == bundled.m_path)
 			{
 				cameraDistance = bundled.m_cameraDistance;
 				cameraYaw = bundled.m_cameraYaw;
+				sky = bundled.m_sky;
 			}
 		}
+		m_settings.sky.enabled = sky;
 		// Start at that distance and angle from the centre of the scene,
 		// looking at it.
 		m_camera.lookAt(m_scene.m_center, cameraDistance * m_scene.m_radius, cameraYaw, kInitialCameraPitch);
@@ -454,6 +464,7 @@ private:
 	bool m_viewKeyDown = false;
 	bool m_emissiveKeyDown = false;
 	bool m_rayKeyDown = false;
+	bool m_skyKeyDown = false;
 	bool m_screenshotKeyDown = false;
 	bool m_windowKeyDown = false;
 	bool m_bookmarkKeyDown[kMaxBookmarks] = {};

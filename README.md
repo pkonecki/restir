@@ -121,6 +121,15 @@ sections:
   reservoir's sample each frame, so the bounced light follows a moving light,
   while the denoised history trails it by a few frames. Loading a model, or
   **Reset light**, puts it back at the scene's default position.
+- **Sky** (K): a gradient from the ground through the horizon to the zenith
+  colour, with an intensity. It shows behind the scene and lights it
+  through the GI rays that the BVH confirms leave the scene, so it needs the
+  BVH ray modes (see "Off-screen geometry"). A reservoir then holds a
+  direction instead of a point, compared between receivers in solid angle;
+  its visibility from another receiver is always tested through the BVH,
+  since the depth buffer cannot tell that nothing lies off screen. It
+  starts on for Sponza and models passed with `--model`, and off for the
+  Cornell box, whose open front would let it flood the room.
 - **Rendering**: multiple bounces (B), shadows (H), the denoiser (N),
   emissive lighting (E), and whether reservoirs are reused through the world-space hash grid or from
   screen-space neighbourhoods (G).

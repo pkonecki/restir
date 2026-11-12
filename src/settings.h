@@ -127,9 +127,21 @@ constexpr const char* kDebugViewHelp[] =
 	"Unbiased contribution weight of each pixel's reservoir, on a log\nscale from 2^-8 (blue) to 2^8 (red); black where it is zero.",
 	"Frames accumulated in each pixel's GI estimate, from 1 (blue: just\ndisoccluded, history rejected) to 16 (red).",
 	"A colour per world-space hash grid cell (without the lookup jitter),\nbrighter when it lists more reservoirs, grey when empty.",
-	"Where each pixel's reservoir sample came from: blue the depth buffer,\ncyan the BVH and on a visible surface, orange the BVH and off screen\nor hidden (shaded from its triangle); black where W is zero.",
+	"Where each pixel's reservoir sample came from: blue the depth buffer,\ncyan the BVH and on a visible surface, orange the BVH and off screen\nor hidden (shaded from its triangle), white the sky; black where W is\nzero.",
 };
 static_assert(BX_COUNTOF(kDebugViewHelp) == size_t(DebugView::Count));
+
+// The sky: a gradient from the ground through the horizon to the zenith.
+// It lights the scene through GI rays that the BVH confirms leave it, so
+// the ray mode must use the BVH.
+struct SkySettings
+{
+	bool enabled = true;    // set per model when one is loaded (see main.cpp)
+	float zenith[3] = { 0.30f, 0.50f, 0.95f };
+	float horizon[3] = { 0.85f, 0.88f, 0.92f };
+	float ground[3] = { 0.32f, 0.29f, 0.26f };
+	float intensity = 1.0f; // radiance scale of the colours above
+};
 
 // The point light. Its position is reset to the scene's default (see
 // describeScene) whenever a model is loaded.
@@ -147,6 +159,7 @@ struct LightSettings
 struct Settings
 {
 	LightSettings light;
+	SkySettings sky;
 
 	bool multipleBounces = true;
 	bool shadows = true;

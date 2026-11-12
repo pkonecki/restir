@@ -24,6 +24,7 @@ uniform vec4 u_compositeOptions; // x: direct weight, y: indirect weight, z: 1 t
 
 #define SHADOW_SAMPLER_STAGE 4
 #include "shadow.sh"
+#include "sky.sh"
 
 #define kPi 3.14159265359
 #define kSceneScale u_sceneInfo.x
@@ -97,8 +98,11 @@ void main()
 	float depth = texture2D(s_depth, v_texcoord0).x;
 	if (depth >= 0.99999)
 	{
-		// The background: the tone mapping pass gives it a fixed colour.
-		gl_FragColor = vec4_splat(0.0);
+		// The background: the sky, or (alpha 0) a fixed colour that the tone
+		// mapping pass fills in.
+		vec3 farPosition = reconstructWorldPosition(v_texcoord0, 1.0);
+		vec3 direction = normalize(farPosition - u_cameraPosition.xyz);
+		gl_FragColor = skyEnabled() ? vec4(skyRadiance(direction), 1.0) : vec4_splat(0.0);
 		return;
 	}
 
