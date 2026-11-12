@@ -25,7 +25,8 @@ constexpr bgfx::ViewId kGridInsertView = 16;
 constexpr bgfx::ViewId kSpatialView = 17;
 constexpr bgfx::ViewId kExposureView = 18;   // auto exposure (compute)
 constexpr bgfx::ViewId kTonemapView = 19;    // exposure and tone mapping, to the window
-constexpr bgfx::ViewId kUiView = 20;         // the settings window, drawn over everything
+constexpr bgfx::ViewId kTaaView = 20;        // temporal anti-aliasing, before the exposure
+constexpr bgfx::ViewId kUiView = 21;         // the settings window, drawn over everything
 
 // GPU timings in the performance section: the views of each group of passes.
 struct PassGroup
@@ -44,6 +45,7 @@ constexpr PassGroup kPassGroups[] =
 	{ "ReSTIR spatial",  kSpatialView,     kSpatialView },
 	{ "Denoiser",        kDenoiseViewBase, kDenoiseViewBase + 5 },
 	{ "Composite",       kCompositeView,   kCompositeView },
+	{ "TAA",             kTaaView,         kTaaView },
 	{ "Tone mapping",    kExposureView,    kTonemapView },
 };
 constexpr int kPassGroupCount = int(BX_COUNTOF(kPassGroups));
@@ -151,6 +153,13 @@ private:
 	bgfx::DynamicIndexBufferHandle m_exposureBuffer = BGFX_INVALID_HANDLE;
 	bool m_exposureValid = false; // false: jump to the next frame's luminance
 
+	// TAA history (ping-pong) and last frame's unjittered view-projection.
+	bgfx::TextureHandle m_taaTextures[2] = { BGFX_INVALID_HANDLE, BGFX_INVALID_HANDLE };
+	bgfx::FrameBufferHandle m_taaFrameBuffers[2] = { BGFX_INVALID_HANDLE, BGFX_INVALID_HANDLE };
+	uint8_t m_taaRead = 0;
+	bool m_taaValid = false;
+	float m_previousUnjitteredViewProj[16] = {};
+
 	// Denoiser targets.
 	bgfx::TextureHandle m_filteredHistory[2] = { BGFX_INVALID_HANDLE, BGFX_INVALID_HANDLE };
 	bgfx::FrameBufferHandle m_filteredHistoryFrameBuffers[2] = { BGFX_INVALID_HANDLE, BGFX_INVALID_HANDLE };
@@ -180,6 +189,7 @@ private:
 	bgfx::ProgramHandle m_exposureProgram = BGFX_INVALID_HANDLE;
 	bgfx::ProgramHandle m_tonemapProgram = BGFX_INVALID_HANDLE;
 	bgfx::ProgramHandle m_debugProgram = BGFX_INVALID_HANDLE;
+	bgfx::ProgramHandle m_taaProgram = BGFX_INVALID_HANDLE;
 
 	// Uniforms and samplers.
 	bgfx::UniformHandle m_lightPosition = BGFX_INVALID_HANDLE;
@@ -227,4 +237,7 @@ private:
 	bgfx::UniformHandle m_skyZenithUniform = BGFX_INVALID_HANDLE;
 	bgfx::UniformHandle m_skyHorizonUniform = BGFX_INVALID_HANDLE;
 	bgfx::UniformHandle m_skyGroundUniform = BGFX_INVALID_HANDLE;
+	bgfx::UniformHandle m_taaHistorySampler = BGFX_INVALID_HANDLE;
+	bgfx::UniformHandle m_taaPreviousViewProjUniform = BGFX_INVALID_HANDLE;
+	bgfx::UniformHandle m_taaInfoUniform = BGFX_INVALID_HANDLE;
 };

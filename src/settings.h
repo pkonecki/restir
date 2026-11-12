@@ -167,6 +167,7 @@ struct Settings
 	bool worldSpaceReuse = true;
 	bool vsync = true;
 	bool hideWindowInScreenshots = true;
+	bool taa = true; // temporal anti-aliasing
 	bool emissiveLighting = true; // emissive surfaces on screen light the scene through GI
 	int rayMode = int(RayMode::Hybrid);
 

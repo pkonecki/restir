@@ -61,6 +61,21 @@ constexpr float kGridCellPixels = 6.0f;   // cell size, in GI pixels, that the g
 // Buffer stage of the BVH in the GI passes (BVH_STAGE in shaders/restir.sh).
 constexpr uint8_t kBvhStage = 15;
 
+// TAA: the jitter sequence's length, and the radical inverse it is made of.
+constexpr uint32_t kTaaJitterCount = 8;
+
+float halton(uint32_t _index, uint32_t _base)
+{
+	float result = 0.0f;
+	float fraction = 1.0f;
+	for (uint32_t value = _index; value > 0; value /= _base)
+	{
+		fraction /= float(_base);
+		result += fraction * float(value % _base);
+	}
+	return result;
+}
+
 // Cap on the M of every reused reservoir (kMaxHistory in shaders/restir.sh).
 constexpr int kMaxReusedHistory = 20;
 
@@ -84,7 +99,7 @@ void Renderer::init(const Settings& _settings)
 		kGeometryView, kGridClearView, kGridInsertView, kTemporalView, kSpatialView,
 		kDenoiseViewBase + 0, kDenoiseViewBase + 1, kDenoiseViewBase + 2,
 		kDenoiseViewBase + 3, kDenoiseViewBase + 4, kDenoiseViewBase + 5,
-		kCompositeView, kExposureView, kTonemapView, kUiView,
+		kCompositeView, kTaaView, kExposureView, kTonemapView, kUiView,
 	};
 	bgfx::setViewOrder(0, BX_COUNTOF(viewOrder), viewOrder);
 
@@ -142,6 +157,7 @@ void Renderer::init(const Settings& _settings)
 	m_atrousProgram = loadProgram("vs_fullscreen", "fs_svgf_atrous");
 	m_exposureProgram = bgfx::createProgram(loadShader("cs_exposure"), true);
 	m_tonemapProgram = loadProgram("vs_fullscreen", "fs_tonemap");
+	m_taaProgram = loadProgram("vs_fullscreen", "fs_taa");
 	m_debugProgram = loadProgram("vs_fullscreen", "fs_debug");
 	m_lightPosition = bgfx::createUniform("u_lightPosition", bgfx::UniformType::Vec4);
 	m_lightColor = bgfx::createUniform("u_lightColor", bgfx::UniformType::Vec4);
@@ -180,6 +196,9 @@ void Renderer::init(const Settings& _settings)
 	m_hdrSampler = bgfx::createUniform("s_hdr", bgfx::UniformType::Sampler);
 	m_exposureAdaptUniform = bgfx::createUniform("u_exposureAdapt", bgfx::UniformType::Vec4);
 	m_tonemapUniform = bgfx::createUniform("u_tonemap", bgfx::UniformType::Vec4);
+	m_taaHistorySampler = bgfx::createUniform("s_taaHistory", bgfx::UniformType::Sampler);
+	m_taaPreviousViewProjUniform = bgfx::createUniform("u_taaPreviousViewProj", bgfx::UniformType::Mat4);
+	m_taaInfoUniform = bgfx::createUniform("u_taaInfo", bgfx::UniformType::Vec4);
 	m_debugViewUniform = bgfx::createUniform("u_debugView", bgfx::UniformType::Vec4);
 	m_emissiveSampler = bgfx::createUniform("s_emissive", bgfx::UniformType::Sampler);
 	m_shadingNormalSampler = bgfx::createUniform("s_shadingNormal", bgfx::UniformType::Sampler);
@@ -249,7 +268,7 @@ void Renderer::shutdown()
 	{
 		m_geometryProgram, m_temporalProgram, m_spatialProgram, m_compositeProgram, m_shadowProgram,
 		m_varianceProgram, m_atrousProgram, m_gridClearProgram, m_gridInsertProgram,
-		m_exposureProgram, m_tonemapProgram, m_debugProgram,
+		m_exposureProgram, m_tonemapProgram, m_debugProgram, m_taaProgram,
 	};
 	for (bgfx::ProgramHandle& program : programs)
 	{
@@ -274,6 +293,7 @@ void Renderer::shutdown()
 		m_materialEmissiveUniform, m_materialFactorsUniform,
 		m_emissiveSampler, m_shadingNormalSampler, m_bvhInfoUniform,
 		m_skyZenithUniform, m_skyHorizonUniform, m_skyGroundUniform,
+		m_taaHistorySampler, m_taaPreviousViewProjUniform, m_taaInfoUniform,
 		m_hdrSampler, m_exposureAdaptUniform, m_tonemapUniform,
 		m_debugViewUniform, m_compositeOptionsUniform,
 	};
@@ -330,6 +350,7 @@ void Renderer::setScene(const SceneMesh& _mesh, const SceneInfo& _info)
 
 	m_scene = _info;
 	m_historyValid = false;
+	m_taaValid = false;
 	m_exposureValid = false;
 }
 
@@ -359,15 +380,34 @@ void Renderer::render(const FrameInput& _input, const Settings& _settings)
 		createShadowMap(_settings);
 	}
 
+	const DebugView debugView = DebugView(_settings.debugView);
+	const bool dataView = debugView >= DebugView::Albedo;
+
 	const float radius = m_scene.m_radius;
 	const bx::Vec3 eye = _input.m_eye;
 	const float* view = _input.m_camera.m_view;
-	const float* projection = _input.m_camera.m_projection;
+	// With TAA, every frame is rendered with a different sub-pixel offset
+	// (Halton 2, 3), which the TAA pass integrates. The scene passes all use
+	// the jittered matrices; TAA reprojects with the unjittered ones.
+	const bool taa = _settings.taa && !dataView;
+	float projection[16];
+	bx::memCopy(projection, _input.m_camera.m_projection, sizeof(projection));
+	if (taa)
+	{
+		const uint32_t index = (m_frameNumber % kTaaJitterCount) + 1;
+		const float jitterX = (halton(index, 2) - 0.5f) * 2.0f / float(width);
+		const float jitterY = (halton(index, 3) - 0.5f) * 2.0f / float(height);
+		// clip.xy += jitter * clip.w, and clip.w comes from column 3.
+		projection[8] += jitterX * projection[11];
+		projection[9] += jitterY * projection[11];
+	}
 
 	float viewProjection[16];
 	float inverseViewProjection[16];
+	float unjitteredViewProjection[16];
 	bx::mtxMul(viewProjection, view, projection);
 	bx::mtxInverse(inverseViewProjection, viewProjection);
+	bx::mtxMul(unjitteredViewProjection, view, _input.m_camera.m_projection);
 
 	const LightSettings& light = _settings.light;
 	const float lightPosition[] = { light.position[0], light.position[1], light.position[2], 1.0f };
@@ -694,8 +734,6 @@ void Renderer::render(const FrameInput& _input, const Settings& _settings)
 	bgfx::setViewRect(kCompositeView, 0, 0, uint16_t(width), uint16_t(height));
 	bgfx::setViewFrameBuffer(kCompositeView, m_hdrFrameBuffer);
 	bgfx::setViewTransform(kCompositeView, nullptr, nullptr);
-	const DebugView debugView = DebugView(_settings.debugView);
-	const bool dataView = debugView >= DebugView::Albedo;
 	if (dataView)
 	{
 		// Data views replace the composite with display colours.
@@ -783,6 +821,42 @@ void Renderer::render(const FrameInput& _input, const Settings& _settings)
 		m_exposureValid = false;
 	}
 
+	// TAA: blend this frame into the reprojected history.
+	bgfx::TextureHandle display = m_hdrTexture;
+	if (taa)
+	{
+		const uint8_t taaWrite = uint8_t(1 - m_taaRead);
+		bgfx::setMarker("TAA");
+		bgfx::setViewName(kTaaView, "TAA");
+		bgfx::setViewRect(kTaaView, 0, 0, uint16_t(width), uint16_t(height));
+		bgfx::setViewFrameBuffer(kTaaView, m_taaFrameBuffers[taaWrite]);
+		bgfx::setViewTransform(kTaaView, nullptr, nullptr);
+		const float taaInfo[] =
+		{
+			m_taaValid ? 1.0f : 0.0f,
+			bgfx::getCaps()->originBottomLeft ? 1.0f : 0.0f,
+			1.0f / float(width),
+			1.0f / float(height),
+		};
+		bgfx::setTexture(0, m_hdrSampler, m_hdrTexture);
+		bgfx::setTexture(1, m_taaHistorySampler, m_taaTextures[m_taaRead]);
+		bgfx::setTexture(2, m_depthSampler, m_gbufferDepth);
+		bgfx::setUniform(m_inverseViewProjection, inverseViewProjection);
+		bgfx::setUniform(m_taaPreviousViewProjUniform, m_previousUnjitteredViewProj);
+		bgfx::setUniform(m_taaInfoUniform, taaInfo);
+		setFullscreenGeometry();
+		bgfx::setState(BGFX_STATE_WRITE_RGB | BGFX_STATE_WRITE_A);
+		bgfx::submit(kTaaView, m_taaProgram);
+		display = m_taaTextures[taaWrite];
+		m_taaRead = taaWrite;
+		m_taaValid = true;
+	}
+	else
+	{
+		// The history would be stale when TAA comes back.
+		m_taaValid = false;
+	}
+
 	bgfx::setMarker("Tone Mapping");
 	bgfx::setViewName(kTonemapView, "Tone Mapping");
 	bgfx::setViewRect(kTonemapView, 0, 0, uint16_t(width), uint16_t(height));
@@ -795,7 +869,7 @@ void Renderer::render(const FrameInput& _input, const Settings& _settings)
 		float(_settings.tonemapper),
 		dataView ? 1.0f : 0.0f,
 	};
-	bgfx::setTexture(0, m_hdrSampler, m_hdrTexture);
+	bgfx::setTexture(0, m_hdrSampler, display);
 	bgfx::setBuffer(1, m_exposureBuffer, bgfx::Access::Read);
 	bgfx::setUniform(m_tonemapUniform, tonemap);
 	setFullscreenGeometry();
@@ -803,6 +877,7 @@ void Renderer::render(const FrameInput& _input, const Settings& _settings)
 	bgfx::submit(kTonemapView, m_tonemapProgram);
 
 	bx::memCopy(m_previousViewProj, viewProjection, sizeof(m_previousViewProj));
+	bx::memCopy(m_previousUnjitteredViewProj, unjitteredViewProjection, sizeof(m_previousUnjitteredViewProj));
 	m_previousEye = eye;
 	m_historyRead = historyWrite;
 	m_historyValid = true;
@@ -855,6 +930,8 @@ void Renderer::destroyRenderTargets()
 {
 	destroyIfValid(m_gbuffer);
 	destroyIfValid(m_hdrFrameBuffer);
+	destroyIfValid(m_taaFrameBuffers[0]);
+	destroyIfValid(m_taaFrameBuffers[1]);
 	for (uint8_t idx = 0; idx < 2; ++idx)
 	{
 		destroyIfValid(m_reservoirFrameBuffers[idx]);
@@ -950,6 +1027,14 @@ void Renderer::createRenderTargets(uint32_t _width, uint32_t _height, const Sett
 	m_hdrTexture = createTarget(_width, _height, bgfx::TextureFormat::RGBA16F);
 	m_hdrFrameBuffer = bgfx::createFrameBuffer(1, &m_hdrTexture, true);
 
+	// TAA history, read with bilinear filtering.
+	for (uint8_t idx = 0; idx < 2; ++idx)
+	{
+		m_taaTextures[idx] = bgfx::createTexture2D(uint16_t(_width), uint16_t(_height), false, 1
+			, bgfx::TextureFormat::RGBA16F, BGFX_TEXTURE_RT | BGFX_SAMPLER_U_CLAMP | BGFX_SAMPLER_V_CLAMP);
+		m_taaFrameBuffers[idx] = bgfx::createFrameBuffer(1, &m_taaTextures[idx], true);
+	}
+
 	for (uint8_t idx = 0; idx < 2; ++idx)
 	{
 		// Per frame parity, the temporal pass writes the reservoirs (sample
@@ -985,6 +1070,7 @@ void Renderer::createRenderTargets(uint32_t _width, uint32_t _height, const Sett
 	}
 
 	if (!bgfx::isValid(m_gbuffer) || !bgfx::isValid(m_hdrFrameBuffer)
+	||  !bgfx::isValid(m_taaFrameBuffers[0]) || !bgfx::isValid(m_taaFrameBuffers[1])
 	||  !bgfx::isValid(m_reservoirFrameBuffers[0]) || !bgfx::isValid(m_reservoirFrameBuffers[1])
 	||  !bgfx::isValid(m_shadeFrameBuffers[0]) || !bgfx::isValid(m_shadeFrameBuffers[1])
 	||  !bgfx::isValid(m_filteredHistoryFrameBuffers[0]) || !bgfx::isValid(m_filteredHistoryFrameBuffers[1])
@@ -998,6 +1084,7 @@ void Renderer::createRenderTargets(uint32_t _width, uint32_t _height, const Sett
 	m_targetGiDivisor = giDivisor;
 	m_historyRead = 0;
 	m_historyValid = false;
+	m_taaValid = false;
 	m_frameNumber = 0;
 	bx::mtxIdentity(m_previousViewProj);
 }

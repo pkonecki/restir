@@ -211,6 +211,9 @@ SettingsWindowOutput drawSettingsWindow(const SettingsWindowInput& _input, Setti
 		ImGui::SetItemTooltip("Feed last frame's indirect light back into the samples.");
 		ImGui::Checkbox("Shadows (H)", &_settings.shadows);
 		ImGui::Checkbox("Denoiser (N)", &_settings.denoiser);
+		ImGui::SameLine();
+		ImGui::Checkbox("TAA", &_settings.taa);
+		ImGui::SetItemTooltip("Temporal anti-aliasing: each frame is rendered with a different\nsub-pixel offset, and the frames are blended over time.");
 		ImGui::Checkbox("Emissive lighting (E)", &_settings.emissiveLighting);
 		ImGui::SetItemTooltip("Emissive surfaces light the scene through GI. Like all GI here,\nonly the emitters visible on screen contribute.");
 		ImGui::Combo("Rays (R)", &_settings.rayMode, kRayModeNames, int(RayMode::Count));

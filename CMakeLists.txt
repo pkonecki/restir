@@ -110,7 +110,7 @@ restir_compile_shaders(VERTEX
 	SHADERS vs_scene vs_shadow vs_fullscreen
 	PROFILES ${RESTIR_SHADER_PROFILES})
 restir_compile_shaders(FRAGMENT
-	SHADERS fs_gbuffer fs_composite fs_shadow fs_svgf_variance fs_svgf_atrous
+	SHADERS fs_gbuffer fs_composite fs_shadow fs_svgf_variance fs_svgf_atrous fs_taa
 	PROFILES ${RESTIR_SHADER_PROFILES})
 # Fragment shaders that read storage buffers need the compute profiles too.
 restir_compile_shaders(FRAGMENT

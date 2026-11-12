@@ -140,6 +140,12 @@ sections:
   emission and ambient occlusion, each
   pixel's reservoir M and W and GI history length (heat maps), and the
   world-space hash grid's cells. The tooltip says how to read each one.
+  **TAA** (temporal anti-aliasing) renders each frame with a different
+  sub-pixel offset and blends the frames: the history is reprojected from
+  depth with last frame's unjittered camera, read with a Catmull-Rom filter,
+  and clipped to the current pixel's neighbourhood so moving the camera does
+  not leave ghosts (`shaders/fs_taa.sc`). It runs on the HDR image before
+  the exposure, and is skipped by the data debug views.
   Below them, the exposure: the tone mapper (T cycles through AgX, the
   default, fitted ACES, Khronos PBR Neutral, Reinhard and a plain clamp), the
   exposure in stops, and auto exposure, which brings the log-average
