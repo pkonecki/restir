@@ -209,6 +209,12 @@ and open <http://localhost:8080/restir_gi.html>. The web build starts with
 the bundled Cornell box, since `--model` has no command line to come from. A
 local web build also packs Sponza if it has been fetched, and M switches to it.
 
+`.github/workflows/build.yml` builds the example natively on every push and
+pull request: on Linux (GLSL and SPIR-V shaders), where it also renders the
+Cornell box for 30 frames under Xvfb with Mesa's software rasterizer and
+checks the frame is not blank (the frame is kept as an artifact); on
+Windows with MSVC (HLSL through fxc and dxc); and on macOS (Metal).
+
 `.github/workflows/pages.yml` runs these steps on every push and pull
 request, and deploys pushes to `main` to GitHub Pages. To enable the
 deployment, set **Settings → Pages → Build and deployment → Source** to

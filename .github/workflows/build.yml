@@ -1,0 +1,87 @@
+name: Native builds
+
+# Builds the example on Linux, Windows and macOS, which compiles every shader
+# for that platform's renderers (GLSL and SPIR-V; HLSL through fxc and dxc;
+# Metal), and renders a few frames on Linux with Mesa's software rasterizer.
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: native-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  linux:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+
+      # bgfx needs the X11 and OpenGL headers. The runner image usually has
+      # them; apt is the fallback, since the runners often cannot reach a
+      # mirror (see pages.yml).
+      - name: Check for X11 and OpenGL headers
+        run: |
+          if [ -f /usr/include/X11/Xlib.h ] && [ -f /usr/include/GL/gl.h ]; then
+            echo "Headers present."
+          else
+            sudo timeout 600 apt-get update -o Acquire::Retries=3
+            sudo timeout 600 apt-get install -y --no-install-recommends libx11-dev libgl-dev
+          fi
+
+      - name: Configure
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DBGFX_WITH_WAYLAND=OFF
+
+      - name: Build
+        run: cmake --build build --target restir_gi --parallel "$(nproc)"
+
+      # A few frames of the Cornell box under Xvfb, OpenGL through llvmpipe,
+      # saved by the example's own --screenshot option. Catches shaders that
+      # compile but fail to link or validate at run time.
+      - name: Render a frame
+        working-directory: build
+        run: |
+          xvfb-run -a -s "-screen 0 1280x720x24" \
+            timeout 300 ./restir_gi --no-ui --screenshot smoke --screenshot-frame 30
+          test -f smoke.png
+
+      - name: Check the frame is not blank
+        working-directory: build
+        run: python3 ../.github/scripts/check_screenshot.py smoke.png
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: linux-frame
+          path: build/smoke.png
+          if-no-files-found: ignore
+
+  windows:
+    runs-on: windows-2022
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Configure
+        run: cmake -S . -B build
+
+      - name: Build
+        run: cmake --build build --config Release --target restir_gi --parallel
+
+  macos:
+    runs-on: macos-14
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Configure
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build --target restir_gi --parallel "$(sysctl -n hw.ncpu)"
