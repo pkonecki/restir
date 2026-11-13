@@ -96,7 +96,8 @@ restir_gi --camera 0,1,4.5,0,0.1 --no-ui --screenshot out --screenshot-frame 120
 
 `--camera x,y,z,yaw,pitch` starts from that view, `--settings` applies a
 share string (the view and every setting, as the settings window shows it
-under **Views**), `--no-ui` hides the settings window (F2 toggles it), and `--screenshot` (bgfx's own option)
+under **Views**), `--no-ui` hides the settings window (F2 toggles it), `--no-vsync` starts
+with vsync off (F7 toggles it), and `--screenshot` (bgfx's own option)
 saves `out.png` after the given frame and exits.
 
 The camera flies freely. Hold the left mouse button and drag to look around;

@@ -142,7 +142,8 @@ public:
 		m_height = _height;
 		// The profiler records the per-view GPU timings the settings window shows.
 		m_debug  = BGFX_DEBUG_PROFILER;
-		m_reset  = BGFX_RESET_VSYNC;
+		// --no-vsync starts with vsync off (F7 and the settings window toggle it).
+		m_reset  = commandLine.hasArg("no-vsync") ? BGFX_RESET_NONE : BGFX_RESET_VSYNC;
 
 		bgfx::Init init;
 		init.type     = args.m_type;
