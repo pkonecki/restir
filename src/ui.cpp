@@ -245,6 +245,15 @@ SettingsWindowOutput drawSettingsWindow(const SettingsWindowInput& _input, Setti
 		ImGui::Combo("Rays (R)", &_settings.rayMode, kRayModeNames, int(RayMode::Count));
 		ImGui::SetItemTooltip("Depth buffer: rays only find what is on screen.\nThen BVH: rays the depth buffer cannot answer (off screen, or\nbehind what it shows) are traced through the scene's BVH.\nBVH only: every ray and visibility test is.\n\nBVH: %u triangles, %u nodes, depth %u, built in %.0f ms."
 			, _input.m_bvhStats.m_triangles, _input.m_bvhStats.m_nodes, _input.m_bvhStats.m_depth, _input.m_bvhStats.m_buildMs);
+		ImGui::BeginDisabled(!_input.m_waveIntrinsicsAvailable);
+		bool waveIntrinsics = _settings.waveIntrinsics && _input.m_waveIntrinsicsAvailable;
+		if (ImGui::Checkbox("Wave intrinsics", &waveIntrinsics))
+		{
+			_settings.waveIntrinsics = waveIntrinsics;
+		}
+		ImGui::EndDisabled();
+		ImGui::SetItemTooltip("Vulkan only. The ReSTIR passes' variants with wave (subgroup)\noperations: the queue of BVH rays takes one atomic per wave instead\nof one per ray, the boiling filter's tile mean is a wave sum, and\nvisibility rays traverse the BVH in step across the wave, each node\nread once for all its lanes. Compare the ReSTIR timings below with\nand without.%s"
+			, _input.m_waveIntrinsicsAvailable ? "" : "\n\nNot available with this renderer.");
 		int reuse = _settings.worldSpaceReuse ? 0 : 1;
 		if (ImGui::Combo("Reuse (G)", &reuse, "World-space hash grid\0Screen-space\0"))
 		{

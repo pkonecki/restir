@@ -46,10 +46,11 @@ constexpr PassGroup kPassGroups[] =
 {
 	{ "Shadow map",      kShadowViewBase,  kShadowViewBase + 5 },
 	{ "G-buffer",        kGeometryView,    kGeometryView },
-	{ "ReSTIR DI",       kDiTemporalView,  kDiSpatialView },
+	{ "DI temporal",     kDiTemporalView,  kDiTemporalView },
+	{ "DI spatial",      kDiSpatialView,   kDiSpatialView },
 	{ "Hash grid",       kGridClearView,   kGridInsertView },
-	{ "ReSTIR temporal", kTemporalView,    kTemporalView },
-	{ "ReSTIR spatial",  kSpatialView,     kSpatialView },
+	{ "GI temporal",     kTemporalView,    kTemporalView },
+	{ "GI spatial",      kSpatialView,     kSpatialView },
 	{ "Specular GI",     kSpecularView,    kSpecularView },
 	{ "Denoiser",        kDenoiseViewBase, kDenoiseViewBase + 5 },
 	{ "Composite",       kCompositeView,   kCompositeView },
@@ -98,6 +99,7 @@ public:
 		float m_buildMs = 0.0f;
 	};
 	const BvhStats& bvhStats() const { return m_bvhStats; }
+	bool waveIntrinsicsAvailable() const { return m_waveProgramsValid; }
 
 	// The reference: the unbiased image of the current view, accumulated
 	// with every biased shortcut off, and the error of the live image
@@ -161,10 +163,8 @@ private:
 	bgfx::TextureHandle m_diSample[2] = { BGFX_INVALID_HANDLE, BGFX_INVALID_HANDLE };
 	bgfx::TextureHandle m_diReceiver[2] = { BGFX_INVALID_HANDLE, BGFX_INVALID_HANDLE };
 	bgfx::TextureHandle m_diNormal[2] = { BGFX_INVALID_HANDLE, BGFX_INVALID_HANDLE };
-	bgfx::FrameBufferHandle m_diReservoirFrameBuffers[2] = { BGFX_INVALID_HANDLE, BGFX_INVALID_HANDLE };
 	bgfx::TextureHandle m_diDiffuse = BGFX_INVALID_HANDLE;
 	bgfx::TextureHandle m_diSpecular = BGFX_INVALID_HANDLE;
-	bgfx::FrameBufferHandle m_diShadeFrameBuffer = BGFX_INVALID_HANDLE;
 	uint8_t m_diRead = 0;
 	bool m_diValid = false;
 	bgfx::TextureHandle m_blackTexture = BGFX_INVALID_HANDLE;
@@ -215,8 +215,6 @@ private:
 	bgfx::TextureHandle m_historyReceiver[2] = { BGFX_INVALID_HANDLE, BGFX_INVALID_HANDLE };
 	bgfx::TextureHandle m_historyNormal[2] = { BGFX_INVALID_HANDLE, BGFX_INVALID_HANDLE };
 	bgfx::TextureHandle m_historyMoments[2] = { BGFX_INVALID_HANDLE, BGFX_INVALID_HANDLE };
-	bgfx::FrameBufferHandle m_reservoirFrameBuffers[2] = { BGFX_INVALID_HANDLE, BGFX_INVALID_HANDLE }; // sample, receiver, normal
-	bgfx::FrameBufferHandle m_shadeFrameBuffers[2] = { BGFX_INVALID_HANDLE, BGFX_INVALID_HANDLE };     // colour, moments
 	uint8_t m_historyRead = 0;
 	bool m_historyValid = false;
 	uint32_t m_targetWidth = 0;
@@ -252,9 +250,7 @@ private:
 	uint16_t m_shadowFaceSize = 0; // of the current shadow map
 
 	// World-space hash grid, one per frame parity like the reservoirs.
-	bgfx::DynamicIndexBufferHandle m_gridChecksums[2] = { BGFX_INVALID_HANDLE, BGFX_INVALID_HANDLE };
-	bgfx::DynamicIndexBufferHandle m_gridCounts[2] = { BGFX_INVALID_HANDLE, BGFX_INVALID_HANDLE };
-	bgfx::DynamicIndexBufferHandle m_gridEntries[2] = { BGFX_INVALID_HANDLE, BGFX_INVALID_HANDLE };
+	bgfx::DynamicIndexBufferHandle m_grid[2] = { BGFX_INVALID_HANDLE, BGFX_INVALID_HANDLE };
 
 	// Programs.
 	bgfx::ProgramHandle m_geometryProgram = BGFX_INVALID_HANDLE;
@@ -272,6 +268,12 @@ private:
 	bgfx::ProgramHandle m_taaProgram = BGFX_INVALID_HANDLE;
 	bgfx::ProgramHandle m_diTemporalProgram = BGFX_INVALID_HANDLE;
 	bgfx::ProgramHandle m_diSpatialProgram = BGFX_INVALID_HANDLE;
+	// The same four passes with wave intrinsics (Vulkan only, see compute.sh).
+	bgfx::ProgramHandle m_temporalWaveProgram = BGFX_INVALID_HANDLE;
+	bgfx::ProgramHandle m_spatialWaveProgram = BGFX_INVALID_HANDLE;
+	bgfx::ProgramHandle m_diTemporalWaveProgram = BGFX_INVALID_HANDLE;
+	bgfx::ProgramHandle m_diSpatialWaveProgram = BGFX_INVALID_HANDLE;
+	bool m_waveProgramsValid = false;
 	bgfx::ProgramHandle m_specularProgram = BGFX_INVALID_HANDLE;
 	bgfx::ProgramHandle m_referenceProgram = BGFX_INVALID_HANDLE;
 	bgfx::ProgramHandle m_errorProgram = BGFX_INVALID_HANDLE;

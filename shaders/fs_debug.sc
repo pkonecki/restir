@@ -28,9 +28,7 @@ uniform mat4 u_sceneViewProj;
 uniform vec4 u_debugView; // x: view (DebugView in settings.h), y: largest M, z: origin bottom-left, w: scene scale
 
 #define GRID_READ_ONLY
-#define GRID_CHECKSUM_STAGE 11
-#define GRID_COUNT_STAGE    12
-#define GRID_ENTRY_STAGE    13
+#define GRID_STAGE 11
 #include "hashgrid.sh"
 
 // Keep in sync with DebugView in settings.h (the composite handles the
@@ -92,7 +90,7 @@ vec3 gridCellColor(vec3 _position, vec3 _normal)
 
 	uint hash = gridHash(checksum);
 	vec3 color = vec3(float(hash & 255u), float((hash >> 8u) & 255u), float((hash >> 16u) & 255u)) / 255.0;
-	float fill = min(float(b_gridCounts[cell]) / float(kGridCellCapacity), 1.0);
+	float fill = min(float(b_grid[kGridCountBase + cell]) / float(kGridCellCapacity), 1.0);
 	return mix(vec3_splat(0.15), color, 0.35 + 0.65 * fill);
 }
 

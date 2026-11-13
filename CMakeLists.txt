@@ -114,10 +114,11 @@ restir_compile_shaders(FRAGMENT
 	PROFILES ${RESTIR_SHADER_PROFILES})
 # Fragment shaders that read storage buffers need the compute profiles too.
 restir_compile_shaders(FRAGMENT
-	SHADERS fs_restir_temporal fs_restir_spatial fs_tonemap fs_debug fs_di_temporal fs_di_spatial fs_specular
+	SHADERS fs_tonemap fs_debug fs_specular
 	PROFILES ${RESTIR_COMPUTE_PROFILES})
 restir_compile_shaders(COMPUTE
 	SHADERS cs_grid_clear cs_grid_insert cs_exposure cs_error
+		cs_restir_temporal cs_restir_spatial cs_di_temporal cs_di_spatial
 	PROFILES ${RESTIR_COMPUTE_PROFILES})
 
 # The runtime looks for <name>.bin, not <name>.sc.bin.
@@ -132,6 +133,46 @@ foreach(shader IN LISTS RESTIR_SHADER_BINARIES)
 	)
 	list(APPEND BGFX_RUNTIME_SHADERS "${runtime_shader}")
 endforeach()
+
+# Vulkan only: the ReSTIR compute passes again, with wave intrinsics
+# (RESTIR_WAVE_OPS, see shaders/compute.sh), as SPIR-V 1.3, which subgroup
+# operations need. The renderer loads them as <name>_wave from the spirv
+# directory. Each is compiled from a copy of its source (<name>_wave.sc): a
+# file can be the main dependency of only one custom command, and shaderc
+# needs main() in the file it is given, so an include would not do. The
+# copy's includes are found through the shaders directory.
+if(NOT EMSCRIPTEN)
+	set(RESTIR_WAVE_SOURCES)
+	foreach(shader cs_restir_temporal cs_restir_spatial cs_di_temporal cs_di_spatial)
+		configure_file("${CMAKE_CURRENT_SOURCE_DIR}/shaders/${shader}.sc"
+			"${CMAKE_CURRENT_BINARY_DIR}/wave_shaders/${shader}_wave.sc" COPYONLY)
+		list(APPEND RESTIR_WAVE_SOURCES "${CMAKE_CURRENT_BINARY_DIR}/wave_shaders/${shader}_wave.sc")
+	endforeach()
+	bgfx_compile_shaders(
+		TYPE COMPUTE
+		SHADERS ${RESTIR_WAVE_SOURCES}
+		VARYING_DEF "${CMAKE_CURRENT_SOURCE_DIR}/shaders/varying.def.sc"
+		OUTPUT_DIR "${BGFX_SHADER_OUTPUT_DIR}"
+		OUT_FILES_VAR wave_outputs
+		INCLUDE_DIRS "${CMAKE_CURRENT_SOURCE_DIR}/shaders" "${BGFX_SHADER_COMMON_INCLUDE_PATH}"
+		DEFINES RESTIR_WAVE_OPS
+		PROFILES spirv13-11
+	)
+	foreach(output IN LISTS wave_outputs)
+		add_custom_command(OUTPUT "${output}" APPEND DEPENDS ${RESTIR_SHADER_INCLUDES})
+		get_filename_component(name "${output}" NAME)
+		string(REGEX REPLACE "\\.sc\\.bin$" ".bin" name "${name}")
+		set(runtime_shader "${BGFX_SHADER_OUTPUT_DIR}/spirv/${name}")
+		add_custom_command(
+			OUTPUT "${runtime_shader}"
+			COMMAND ${CMAKE_COMMAND} -E make_directory "${BGFX_SHADER_OUTPUT_DIR}/spirv"
+			COMMAND ${CMAKE_COMMAND} -E copy_if_different "${output}" "${runtime_shader}"
+			DEPENDS "${output}"
+			VERBATIM
+		)
+		list(APPEND BGFX_RUNTIME_SHADERS "${runtime_shader}")
+	endforeach()
+endif()
 
 # Shader sources are listed so that IDEs show them.
 file(GLOB RESTIR_SHADER_SOURCES CONFIGURE_DEPENDS

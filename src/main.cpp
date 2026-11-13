@@ -352,6 +352,7 @@ private:
 			m_renderer.bvhStats(), m_renderer.lightCount(), m_renderer.emissiveTriangleCount(),
 			m_renderer.referenceAccumulating(), m_renderer.referenceFrames(), m_renderer.referenceMetrics(),
 			encodeShareString(m_settings, cameraPose()),
+			m_renderer.waveIntrinsicsAvailable(),
 		};
 		const SettingsWindowOutput windowOutput = drawSettingsWindow(windowInput, m_settings, m_camera);
 		if (windowOutput.m_switchModel)

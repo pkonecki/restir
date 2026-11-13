@@ -110,6 +110,7 @@ std::vector<Field> fields(Settings& _settings)
 		boolField("em", _settings.emissiveLighting),
 		intField("dl", _settings.directLighting, 0, int(DirectLighting::Count) - 1),
 		intField("rays", _settings.rayMode, 0, int(RayMode::Count) - 1),
+		boolField("wave", _settings.waveIntrinsics),
 		boolField("grid", _settings.worldSpaceReuse),
 		boolField("cj", _settings.clampJacobian),
 		boolField("co", _settings.clampOutliers),

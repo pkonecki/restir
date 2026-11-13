@@ -162,8 +162,11 @@ void main()
 		vec3 rayOrigin = position + normal * kRayBias;
 		vec3 hitPosition = vec3_splat(0.0);
 		float hitId = 0.0;
-		bool hit = kRayMode != RAY_MODE_BVH
-			&& traceScreenSpaceRay(rayOrigin, direction, kMaxRayDistance, hitPosition);
+		bool hit = false;
+		if (kRayMode != RAY_MODE_BVH)
+		{
+			hit = traceScreenSpaceRay(rayOrigin, direction, kMaxRayDistance, hitPosition);
+		}
 		if (!hit && kRayMode != RAY_MODE_SCREEN)
 		{
 			float hitDistance = 0.0;

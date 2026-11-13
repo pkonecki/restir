@@ -1,5 +1,3 @@
-$input v_texcoord0
-
 /*
  * ReSTIR DI, step 2: spatial reuse and shading.
  *
@@ -16,7 +14,9 @@ $input v_texcoord0
  * the sample points they hit reflect. It is not stored for reuse.
  */
 
-#include <common.sh>
+#include <bgfx_compute.sh>
+#include "shaderlib.sh"
+#include "compute.sh"
 #include "di.sh"
 
 SAMPLER2D(s_reservoirSample, 4);
@@ -27,7 +27,7 @@ uniform vec4 u_screenSize; // xy: size, zw: texel size
 
 #define kSpatialRadius 16.0 // pixels
 
-void main()
+void diSpatial(vec2 v_texcoord0, ivec2 _pixel, out vec4 o_diffuse, out vec4 o_specular)
 {
 	Surface surface = loadSurface(v_texcoord0);
 	vec4 ownSample = texture2DLod(s_reservoirSample, v_texcoord0, 0.0);
@@ -35,12 +35,12 @@ void main()
 	vec4 ownNormal = texture2DLod(s_reservoirNormal, v_texcoord0, 0.0);
 	if (!surface.valid || lightCount() == 0)
 	{
-		gl_FragData[0] = vec4_splat(0.0);
-		gl_FragData[1] = vec4_splat(0.0);
+		o_diffuse = vec4_splat(0.0);
+		o_specular = vec4_splat(0.0);
 		return;
 	}
 
-	uvec2 pixel = uvec2(gl_FragCoord.xy);
+	uvec2 pixel = uvec2(_pixel);
 	uint rng = pcg(pixel.x + pcg(pixel.y + pcg(uint(u_frameInfo.x) ^ 0x9e3779b9u)));
 
 	int taps = int(u_diInfo.z + 0.5);
@@ -87,9 +87,11 @@ void main()
 		// The canonical sample: how likely could the neighbour have made it?
 		if (canonicalTarget > 0.0)
 		{
-			float neighbourTarget = lightVisible(neighbour, canonicalPoint)
-				? lightTarget(neighbour, canonicalLight, canonicalPoint)
-				: 0.0;
+			float neighbourTarget = 0.0;
+			if (lightVisible(neighbour, canonicalPoint))
+			{
+				neighbourTarget = lightTarget(neighbour, canonicalLight, canonicalPoint);
+			}
 			float canonicalDensity = pairCanonical * canonicalTarget;
 			float denominator = neighbourCount * neighbourTarget + canonicalDensity;
 			canonicalShare += pairWeight * canonicalDensity / denominator;
@@ -130,14 +132,39 @@ void main()
 	}
 
 	float combinedWeight = chosenTarget > 0.0 ? weightSum / (totalCount * chosenTarget) : 0.0;
-	if (combinedWeight > 0.0 && neighbourSelected && !lightVisible(surface, chosenPoint))
+	if (combinedWeight > 0.0 && neighbourSelected)
 	{
-		combinedWeight = 0.0;
+		if (!lightVisible(surface, chosenPoint))
+		{
+			combinedWeight = 0.0;
+		}
 	}
 
 	vec3 diffuse;
 	vec3 specular;
 	evaluateLightSample(surface, chosenLight, chosenPoint, diffuse, specular);
-	gl_FragData[0] = vec4(diffuse * combinedWeight, 1.0);
-	gl_FragData[1] = vec4(specular * combinedWeight, 1.0);
+	o_diffuse = vec4(diffuse * combinedWeight, 1.0);
+	o_specular = vec4(specular * combinedWeight, 1.0);
+}
+
+// A compute shader, in groups of 8x8 pixels (compute.sh), so that the BVH
+// traversal keeps its stack in shared memory (bvh.sh).
+IMAGE2D_WO(o_diffuseImage, rgba16f, 7);
+IMAGE2D_WO(o_specularImage, rgba16f, 8);
+
+NUM_THREADS(kGroupSize, kGroupSize, 1)
+void main()
+{
+	g_bvhThread = int(gl_LocalInvocationIndex);
+	ivec2 pixel = computePixel(gl_GlobalInvocationID);
+	if (!insideImage(pixel, u_screenSize.xy))
+	{
+		return;
+	}
+
+	vec4 diffuse;
+	vec4 specular;
+	diSpatial((vec2(pixel) + 0.5) * u_screenSize.zw, pixel, diffuse, specular);
+	imageStore(o_diffuseImage, pixel, diffuse);
+	imageStore(o_specularImage, pixel, specular);
 }

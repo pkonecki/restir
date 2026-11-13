@@ -113,7 +113,12 @@ void main()
 	vec3 diffuse;
 	vec3 specular;
 	evaluateBrdf(normal, viewDirection, lightDirection, albedo, roughness, metallic, diffuse, specular);
-	float visibility = dot(normal, lightDirection) > 0.0 ? lightVisibilitySoft(position, surfaceNormal) : 0.0;
+	// Not a ?: (HLSL evaluates both sides, see restir.sh).
+	float visibility = 0.0;
+	if (dot(normal, lightDirection) > 0.0)
+	{
+		visibility = lightVisibilitySoft(position, surfaceNormal);
+	}
 	vec3 direct = (diffuse + specular) * (u_lightColor.rgb / distanceSquared) * visibility
 		+ texture2D(s_diDiffuse, v_texcoord0).rgb + texture2D(s_diSpecular, v_texcoord0).rgb;
 	// The GI target holds demodulated irradiance: multiply the diffuse albedo
