@@ -68,7 +68,7 @@ vec2 groupSum(vec2 _value, int _thread)
 	// A tree reduction in shared memory.
 	s_groupSum[_thread] = _value;
 	GROUP_SYNC();
-	for (int stride = kGroupThreads / 2; stride > 0; stride /= 2)
+	for (int stride = kGroupThreads >> 1; stride > 0; stride >>= 1)
 	{
 		if (_thread < stride)
 		{
