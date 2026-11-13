@@ -29,23 +29,21 @@
  * beyond that are simply not listed, which does not bias anything since the
  * choice does not depend on what the reservoirs hold.
  *
- * Before including this file, define the stages of the three buffers as
- * plain numbers (GRID_CHECKSUM_STAGE, GRID_COUNT_STAGE, GRID_ENTRY_STAGE; the
- * register macros cannot take expressions) and, in the passes that only read
- * the grid, GRID_READ_ONLY.
+ * The checksums, the counts and the entries share one buffer, in that order
+ * (a shader stage each would be three of the sixteen a pass can bind).
+ *
+ * Before including this file, define its stage as a plain number
+ * (GRID_STAGE; the register macros cannot take expressions) and, in the
+ * passes that only read the grid, GRID_READ_ONLY.
  */
 
 #ifndef HASHGRID_SH_HEADER_GUARD
 #define HASHGRID_SH_HEADER_GUARD
 
 #ifdef GRID_READ_ONLY
-BUFFER_RO(b_gridChecksums, uint, GRID_CHECKSUM_STAGE);
-BUFFER_RO(b_gridCounts,    uint, GRID_COUNT_STAGE);
-BUFFER_RO(b_gridEntries,   uint, GRID_ENTRY_STAGE);
+BUFFER_RO(b_grid, uint, GRID_STAGE);
 #else
-BUFFER_RW(b_gridChecksums, uint, GRID_CHECKSUM_STAGE);
-BUFFER_RW(b_gridCounts,    uint, GRID_COUNT_STAGE);
-BUFFER_RW(b_gridEntries,   uint, GRID_ENTRY_STAGE);
+BUFFER_RW(b_grid, uint, GRID_STAGE);
 #endif
 
 uniform vec4 u_gridInfo;   // x: smallest cell size, y: world size of a GI pixel at unit distance, z: cell size in GI pixels, w: world-space reuse enabled
@@ -57,6 +55,8 @@ uniform vec4 u_gridCamera; // xyz: camera position the cell sizes of this grid a
 #define kGridCellCapacity 32u
 #define kGridMaxProbes    8u
 #define kGridInvalid      0xffffffffu
+#define kGridCountBase    kGridTableSize          // where the counts start in b_grid
+#define kGridEntryBase    (2u * kGridTableSize)   // and the entries
 
 uint gridHash(uint _value)
 {
@@ -134,7 +134,7 @@ uint gridFindCell(uint _slot, uint _checksum)
 	for (uint probe = 0u; probe < kGridMaxProbes; ++probe)
 	{
 		uint slot = (_slot + probe) & kGridTableMask;
-		uint stored = b_gridChecksums[slot];
+		uint stored = b_grid[slot];
 		if (stored == _checksum)
 		{
 			return slot;
@@ -166,14 +166,14 @@ uint gridPickEntry(vec3 _position, vec3 _normal, float _random0, float _random1,
 		return kGridInvalid;
 	}
 
-	uint count = min(b_gridCounts[cell], kGridCellCapacity);
+	uint count = min(b_grid[kGridCountBase + cell], kGridCellCapacity);
 	if (count == 0u)
 	{
 		return kGridInvalid;
 	}
 
 	uint index = min(uint(_random2 * float(count)), count - 1u);
-	return b_gridEntries[cell * kGridCellCapacity + index];
+	return b_grid[kGridEntryBase + cell * kGridCellCapacity + index];
 }
 
 #else
@@ -185,14 +185,14 @@ void gridInsert(uint _slot, uint _checksum, uint _entry)
 	{
 		uint slot = (_slot + probe) & kGridTableMask;
 		uint previous;
-		atomicFetchCompareExchange(b_gridChecksums[slot], 0u, _checksum, previous);
+		atomicFetchCompareExchange(b_grid[slot], 0u, _checksum, previous);
 		if (previous == 0u || previous == _checksum)
 		{
 			uint index;
-			atomicFetchAndAdd(b_gridCounts[slot], 1u, index);
+			atomicFetchAndAdd(b_grid[kGridCountBase + slot], 1u, index);
 			if (index < kGridCellCapacity)
 			{
-				b_gridEntries[slot * kGridCellCapacity + index] = _entry;
+				b_grid[kGridEntryBase + slot * kGridCellCapacity + index] = _entry;
 			}
 			return;
 		}

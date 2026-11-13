@@ -1,5 +1,3 @@
-$input v_texcoord0
-
 /*
  * ReSTIR DI, step 1: fresh candidates and temporal reuse.
  *
@@ -18,7 +16,9 @@ $input v_texcoord0
  * The selected sample is then tested for visibility and stored (di.sh).
  */
 
-#include <common.sh>
+#include <bgfx_compute.sh>
+#include "shaderlib.sh"
+#include "compute.sh"
 #include "di.sh"
 
 SAMPLER2D(s_previousSample, 4);
@@ -27,19 +27,20 @@ SAMPLER2D(s_previousNormal, 6);
 
 uniform mat4 u_previousViewProj;
 uniform vec4 u_diPrevious; // xyz: last frame's camera position
+uniform vec4 u_screenSize; // xy: size, zw: texel size
 
-void main()
+void diTemporal(vec2 v_texcoord0, ivec2 _pixel, out vec4 o_sample, out vec4 o_receiver, out vec4 o_normal)
 {
 	Surface surface = loadSurface(v_texcoord0);
 	if (!surface.valid || lightCount() == 0)
 	{
-		gl_FragData[0] = vec4(0.0, 0.0, 0.0, -1.0);
-		gl_FragData[1] = vec4_splat(0.0);
-		gl_FragData[2] = vec4_splat(0.0);
+		o_sample = vec4(0.0, 0.0, 0.0, -1.0);
+		o_receiver = vec4_splat(0.0);
+		o_normal = vec4_splat(0.0);
 		return;
 	}
 
-	uvec2 pixel = uvec2(gl_FragCoord.xy);
+	uvec2 pixel = uvec2(_pixel);
 	uint rng = pcg(pixel.x + pcg(pixel.y + pcg(uint(u_frameInfo.x) ^ 0x3c6ef372u)));
 
 	// Fresh candidates.
@@ -107,9 +108,14 @@ void main()
 	chosenTarget = 0.0;
 	if (canonicalTarget > 0.0)
 	{
-		float previousTarget = temporalCount > 0.0 && lightVisible(previous, canonicalPoint)
-			? lightTarget(previous, canonicalLight, canonicalPoint)
-			: 0.0;
+		float previousTarget = 0.0;
+		if (temporalCount > 0.0)
+		{
+			if (lightVisible(previous, canonicalPoint))
+			{
+				previousTarget = lightTarget(previous, canonicalLight, canonicalPoint);
+			}
+		}
 		float denominator = canonicalCount * canonicalTarget + temporalCount * previousTarget;
 		float weight = canonicalCount * canonicalTarget / denominator * canonicalTarget * canonicalWeight;
 		weightSum += weight;
@@ -136,12 +142,40 @@ void main()
 
 	// The MIS weights sum to one, so W = sum of weights / target.
 	float combinedWeight = chosenTarget > 0.0 ? weightSum / chosenTarget : 0.0;
-	if (combinedWeight > 0.0 && !lightVisible(surface, chosenPoint))
+	if (combinedWeight > 0.0)
 	{
-		combinedWeight = 0.0;
+		if (!lightVisible(surface, chosenPoint))
+		{
+			combinedWeight = 0.0;
+		}
 	}
 
-	gl_FragData[0] = vec4(chosenPoint, float(chosenLight));
-	gl_FragData[1] = vec4(surface.position, combinedWeight);
-	gl_FragData[2] = vec4(surface.normal, canonicalCount + temporalCount);
+	o_sample = vec4(chosenPoint, float(chosenLight));
+	o_receiver = vec4(surface.position, combinedWeight);
+	o_normal = vec4(surface.normal, canonicalCount + temporalCount);
+}
+
+// A compute shader, in groups of 8x8 pixels (compute.sh), so that the BVH
+// traversal keeps its stack in shared memory (bvh.sh).
+IMAGE2D_WO(o_sampleImage, rgba32f, 7);
+IMAGE2D_WO(o_receiverImage, rgba32f, 8);
+IMAGE2D_WO(o_normalImage, rgba16f, 9);
+
+NUM_THREADS(kGroupSize, kGroupSize, 1)
+void main()
+{
+	g_bvhThread = int(gl_LocalInvocationIndex);
+	ivec2 pixel = computePixel(gl_GlobalInvocationID);
+	if (!insideImage(pixel, u_screenSize.xy))
+	{
+		return;
+	}
+
+	vec4 sampleData;
+	vec4 receiver;
+	vec4 normal;
+	diTemporal((vec2(pixel) + 0.5) * u_screenSize.zw, pixel, sampleData, receiver, normal);
+	imageStore(o_sampleImage, pixel, sampleData);
+	imageStore(o_receiverImage, pixel, receiver);
+	imageStore(o_normalImage, pixel, normal);
 }

@@ -1,5 +1,3 @@
-$input v_texcoord0
-
 /*
  * ReSTIR GI, step 2: spatial reuse and shading.
  *
@@ -16,20 +14,22 @@ $input v_texcoord0
  * deliberately not stored: feeding spatially merged results back would
  * compound correlation and visibility errors frame after frame.
  *
- * Render targets:
+ * Outputs (images at stages 12 and 13):
  *
  *   0: rgb = temporally accumulated indirect estimate, demodulated (divided
  *            by the diffuse albedo), a = history length
  *   1: x   = mean luminance, y = mean squared luminance, z = history length
  *
- * The denoiser (fs_svgf_*.sc) filters target 0 using target 1 and the
+ * The denoiser (fs_svgf_*.sc) filters output 0 using output 1 and the
  * receiver position and normal targets, and feeds its first filtered
  * iteration back as s_historyColor for the next frame. Demodulating keeps
  * albedo detail out of the filter: the composite pass multiplies the albedo
  * back in.
  */
 
-#include <common.sh>
+#include <bgfx_compute.sh>
+#include "shaderlib.sh"
+#include "compute.sh"
 
 SAMPLER2D(s_reservoirSample, 3);   // this frame's sample position + M
 SAMPLER2D(s_reservoirReceiver, 4); // this frame's receiver position + W
@@ -92,13 +92,13 @@ bool reprojectHistory(vec2 _previousUv, vec3 _position, vec3 _normal, out vec3 _
 	return true;
 }
 
-void main()
+void restirSpatial(vec2 v_texcoord0, out vec4 o_color, out vec4 o_moments)
 {
 	float depth = texture2DLod(s_depth, v_texcoord0, 0.0).x;
 	if (depth >= kSkyDepth)
 	{
-		gl_FragData[0] = vec4_splat(0.0);
-		gl_FragData[1] = vec4_splat(0.0);
+		o_color = vec4_splat(0.0);
+		o_moments = vec4_splat(0.0);
 		return;
 	}
 
@@ -117,11 +117,15 @@ void main()
 	float canonicalWeight = texture2DLod(s_reservoirReceiver, v_texcoord0, 0.0).w;
 	float canonicalCount = max(min(ownSample.w, kMaxHistory), 1.0);
 	Reservoir canonical = emptyReservoir();
-	vec3 canonicalContribution;
-	vec3 canonicalNormal;
-	if (canonicalWeight > 0.0
-	&&  evaluateSample(position, normal, albedo, ownSample.xyz, texture2DLod(s_reservoirNormal, v_texcoord0, 0.0).w
-		, canonicalContribution, canonicalNormal))
+	vec3 canonicalContribution = vec3_splat(0.0);
+	vec3 canonicalNormal = vec3(0.0, 0.0, 1.0);
+	bool canonicalValid = false;
+	if (canonicalWeight > 0.0)
+	{
+		canonicalValid = evaluateSample(position, normal, albedo, ownSample.xyz
+			, texture2DLod(s_reservoirNormal, v_texcoord0, 0.0).w, canonicalContribution, canonicalNormal);
+	}
+	if (canonicalValid)
 	{
 		canonical.contribution = canonicalContribution;
 		canonical.position = ownSample.xyz;
@@ -198,11 +202,13 @@ void main()
 	vec3 previousColor = vec3_splat(0.0);
 	vec3 previousMoments = vec3_splat(0.0);
 	vec4 clipPrevious = mul(u_previousViewProj, vec4(position, 1.0));
-	if (u_frameInfo.y < 0.5 || clipPrevious.w <= 0.0001
-	||  !reprojectHistory(clipToUv(clipPrevious), position, normal, previousColor, previousMoments))
+	if (u_frameInfo.y > 0.5 && clipPrevious.w > 0.0001)
 	{
-		previousColor = vec3_splat(0.0);
-		previousMoments = vec3_splat(0.0);
+		if (!reprojectHistory(clipToUv(clipPrevious), position, normal, previousColor, previousMoments))
+		{
+			previousColor = vec3_splat(0.0);
+			previousMoments = vec3_splat(0.0);
+		}
 	}
 
 	float historyLength = min(previousMoments.z + 1.0, kMaxAccumulation);
@@ -214,6 +220,28 @@ void main()
 		, blendWeight
 		);
 
-	gl_FragData[0] = vec4(color, historyLength);
-	gl_FragData[1] = vec4(moments, historyLength, 0.0);
+	o_color = vec4(color, historyLength);
+	o_moments = vec4(moments, historyLength, 0.0);
+}
+
+// A compute shader, in groups of 8x8 pixels (compute.sh), so that the BVH
+// traversal keeps its stack in shared memory (bvh.sh).
+IMAGE2D_WO(o_colorImage, rgba16f, 12);
+IMAGE2D_WO(o_momentsImage, rgba16f, 13);
+
+NUM_THREADS(kGroupSize, kGroupSize, 1)
+void main()
+{
+	g_bvhThread = int(gl_LocalInvocationIndex);
+	ivec2 pixel = computePixel(gl_GlobalInvocationID);
+	if (!insideImage(pixel, u_screenInfo.xy))
+	{
+		return;
+	}
+
+	vec4 color;
+	vec4 moments;
+	restirSpatial((vec2(pixel) + 0.5) * u_screenInfo.zw, color, moments);
+	imageStore(o_colorImage, pixel, color);
+	imageStore(o_momentsImage, pixel, moments);
 }

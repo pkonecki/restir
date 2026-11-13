@@ -52,6 +52,7 @@ struct BuildNode
 	Bounds m_bounds;
 	uint32_t m_first = 0; // first triangle (leaf) or first child (interior)
 	uint32_t m_count = 0; // triangles; 0 for an interior node
+	bool m_leaf = false;
 };
 
 constexpr int kBins = 12;
@@ -88,6 +89,7 @@ private:
 	{
 		m_nodes[_node].m_first = _begin;
 		m_nodes[_node].m_count = _end - _begin;
+		m_nodes[_node].m_leaf = true;
 		m_depth = std::max(m_depth, _depth);
 	}
 
@@ -295,17 +297,38 @@ SceneBvh buildBvh(const SceneMesh& _mesh)
 	bvh.m_depth = builder.m_depth;
 	bvh.m_data.resize(std::size_t(bvh.m_triangleOffset + 4 * bvh.m_triangleCount) * 4, 0.0f);
 
+	// The nodes in depth-first order: a node's left child follows it, and the
+	// node after its whole subtree is where a traversal goes once it is done
+	// with (or misses) the node: its skip link. That lets the shaders
+	// traverse without a stack (see shaders/bvh.sh).
 	float* out = bvh.m_data.data();
-	for (const BuildNode& node : builder.m_nodes)
+	uint32_t written = 0;
+	const auto emit = [&](const auto& _self, uint32_t _node) -> void
 	{
-		const float values[8] =
+		const BuildNode& node = builder.m_nodes[_node];
+		float* values = out + std::size_t(written) * 8;
+		++written;
+		values[0] = node.m_bounds.m_min.x;
+		values[1] = node.m_bounds.m_min.y;
+		values[2] = node.m_bounds.m_min.z;
+		values[4] = node.m_bounds.m_max.x;
+		values[5] = node.m_bounds.m_max.y;
+		values[6] = node.m_bounds.m_max.z;
+		if (node.m_leaf)
 		{
-			node.m_bounds.m_min.x, node.m_bounds.m_min.y, node.m_bounds.m_min.z, float(node.m_first),
-			node.m_bounds.m_max.x, node.m_bounds.m_max.y, node.m_bounds.m_max.z, float(node.m_count),
-		};
-		std::memcpy(out, values, sizeof(values));
-		out += 8;
-	}
+			values[3] = float(node.m_first);
+			values[7] = float(node.m_count);
+			return;
+		}
+
+		_self(_self, node.m_first);
+		const uint32_t right = written;
+		_self(_self, node.m_first + 1);
+		values[3] = float(right);
+		values[7] = -float(written + 1); // skip link, negative: an interior node
+	};
+	emit(emit, 0);
+	out += std::size_t(written) * 8; // the triangles follow
 
 	uint32_t bvhIndex = 0;
 	for (const uint32_t triangle : builder.m_order)

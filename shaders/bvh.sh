@@ -19,7 +19,7 @@ uniform vec4 u_bvhInfo; // x: first triangle (in vec4s), z: node count (0: no BV
 #define RAY_MODE_BVH    2 // the BVH for every ray and visibility test
 
 #define kRayMode int(u_bvhInfo.w)
-#define kBvhStackSize 40 // at least kBvhMaxDepth in src/bvh.h
+#define kBvhStackSize 40 // at least kBvhMaxDepth in src/bvh.h (shared-memory traversal only)
 #define kBvhMaxSteps 2048 // node visits, a guard against a broken tree
 
 bool bvhAvailable()
@@ -77,56 +77,157 @@ vec3 bvhVertex(int _triangle, int _corner)
 
 // The nearest triangle the ray hits within _maxDistance, or -1. With
 // _anyHit, the first one found (for visibility tests).
-int traceBvh(vec3 _origin, vec3 _direction, float _maxDistance, bool _anyHit, out float _distance)
-{
-	_distance = _maxDistance;
-	if (!bvhAvailable())
-	{
-		return -1;
-	}
+//
+// Traversals of the same depth-first node layout (src/bvh.h):
+// - Stackless (the default): a node's left child is the next node, and its
+//   skip link is where to go once the node is missed or done with. No array,
+//   so nothing to spill to scratch memory, which a per-thread stack in a pixel
+//   shader does (the dynamically indexed array cannot stay in registers). It
+//   always visits the left child first, so closest-hit rays may visit more
+//   nodes.
+// - With BVH_SHARED_STACK (compute shaders, a group of that many threads):
+//   closest-hit rays visit the nearest child first, with the stack of other
+//   children in shared memory, kBvhStackSize entries per thread. The shader
+//   sets g_bvhThread to gl_LocalInvocationIndex at the start of main() (bgfx
+//   passes it to main() only). Visibility rays stay stackless: any hit will
+//   do, so the order matters less.
+// - With RESTIR_WAVE_OPS as well (Vulkan, see compute.sh), visibility rays
+//   traverse in step across the wave: each step, the wave visits the
+//   smallest node any of its lanes still needs, read once for all of them
+//   at a wave-uniform index. Node indices only grow along a stackless
+//   traversal, so every lane still visits its own nodes in order.
+#ifdef BVH_SHARED_STACK
+#	if BGFX_SHADER_LANGUAGE_GLSL
+int g_bvhThread;
+#	else
+static int g_bvhThread;
+#	endif
+SHARED int s_bvhStack[BVH_SHARED_STACK * kBvhStackSize];
+#endif
 
-	// Axis-parallel rays: a huge but finite inverse keeps the slabs working.
+// The ray's slabs: a huge but finite inverse keeps axis-parallel rays working.
+vec3 bvhInverseDirection(vec3 _direction)
+{
 	vec3 safeDirection = vec3(
 		  abs(_direction.x) > 1e-8 ? _direction.x : (_direction.x >= 0.0 ? 1e-8 : -1e-8)
 		, abs(_direction.y) > 1e-8 ? _direction.y : (_direction.y >= 0.0 ? 1e-8 : -1e-8)
 		, abs(_direction.z) > 1e-8 ? _direction.z : (_direction.z >= 0.0 ? 1e-8 : -1e-8)
 		);
-	vec3 inverseDirection = vec3_splat(1.0) / safeDirection;
+	return vec3_splat(1.0) / safeDirection;
+}
 
-	// Initialised so the D3D compiler does not flag reads it cannot prove are
-	// preceded by writes.
-	int stack[kBvhStackSize];
-	for (int i = 0; i < kBvhStackSize; ++i)
+// Tests a leaf's triangles, shortening _distance to the nearest hit.
+int bvhIntersectLeaf(vec3 _origin, vec3 _direction, int _first, int _count, inout float _distance, int _hit)
+{
+	int hit = _hit;
+	for (int triangleIndex = _first; triangleIndex < _first + _count; ++triangleIndex)
 	{
-		stack[i] = 0;
+		float t = intersectTriangle(_origin, _direction
+			, bvhVertex(triangleIndex, 0), bvhVertex(triangleIndex, 1), bvhVertex(triangleIndex, 2));
+		if (t > 0.0 && t < _distance)
+		{
+			_distance = t;
+			hit = triangleIndex;
+		}
 	}
-	int stackSize = 0;
+	return hit;
+}
+
+int traceBvhStackless(vec3 _origin, vec3 _direction, bool _anyHit, inout float _distance)
+{
+	vec3 inverseDirection = bvhInverseDirection(_direction);
+	int nodeCount = int(u_bvhInfo.z);
 	int hit = -1;
 	int node = 0;
+	for (int step = 0; step < kBvhMaxSteps; ++step)
+	{
+		if (node >= nodeCount)
+		{
+			break;
+		}
+
+		vec4 node0 = b_scene[node * 2];
+		vec4 node1 = b_scene[node * 2 + 1];
+		bool leaf = node1.w >= 0.0;
+		if (intersectBox(_origin, inverseDirection, node0.xyz, node1.xyz, _distance) < 0.0)
+		{
+			// Missed: past its subtree (a leaf's is itself).
+			node = leaf ? node + 1 : int(-node1.w) - 1;
+			continue;
+		}
+
+		if (leaf)
+		{
+			hit = bvhIntersectLeaf(_origin, _direction, int(node0.w), int(node1.w), _distance, hit);
+			if (_anyHit && hit >= 0)
+			{
+				return hit;
+			}
+		}
+		node = node + 1;
+	}
+	return hit;
+}
+
+#if defined(BVH_SHARED_STACK) && defined(RESTIR_WAVE_OPS)
+int traceBvhWave(vec3 _origin, vec3 _direction, bool _anyHit, inout float _distance)
+{
+	vec3 inverseDirection = bvhInverseDirection(_direction);
+	int nodeCount = int(u_bvhInfo.z);
+	int hit = -1;
+	int node = 0;
+	for (int step = 0; step < kBvhMaxSteps; ++step)
+	{
+		// Lanes that are done ask for no node (nodeCount and past).
+		int waveNode = WaveActiveMin(node);
+		if (waveNode >= nodeCount)
+		{
+			break;
+		}
+
+		if (node == waveNode)
+		{
+			vec4 node0 = b_scene[waveNode * 2];
+			vec4 node1 = b_scene[waveNode * 2 + 1];
+			bool leaf = node1.w >= 0.0;
+			if (intersectBox(_origin, inverseDirection, node0.xyz, node1.xyz, _distance) < 0.0)
+			{
+				node = leaf ? node + 1 : int(-node1.w) - 1;
+			}
+			else
+			{
+				if (leaf)
+				{
+					hit = bvhIntersectLeaf(_origin, _direction, int(node0.w), int(node1.w), _distance, hit);
+				}
+				node = _anyHit && hit >= 0 ? nodeCount : node + 1;
+			}
+		}
+	}
+	return hit;
+}
+#endif
+
+#ifdef BVH_SHARED_STACK
+int traceBvhSharedStack(vec3 _origin, vec3 _direction, bool _anyHit, inout float _distance)
+{
+	vec3 inverseDirection = bvhInverseDirection(_direction);
 	if (intersectBox(_origin, inverseDirection, b_scene[0].xyz, b_scene[1].xyz, _distance) < 0.0)
 	{
 		return -1;
 	}
 
+	int stackBase = g_bvhThread * kBvhStackSize;
+	int stackSize = 0;
+	int hit = -1;
+	int node = 0;
 	for (int step = 0; step < kBvhMaxSteps; ++step)
 	{
 		vec4 node0 = b_scene[node * 2];
 		vec4 node1 = b_scene[node * 2 + 1];
-		int first = int(node0.w);
-		int count = int(node1.w);
-		if (count > 0)
+		if (node1.w >= 0.0)
 		{
-			for (int triangleIndex = first; triangleIndex < first + count; ++triangleIndex)
-			{
-				float t = intersectTriangle(_origin, _direction
-					, bvhVertex(triangleIndex, 0), bvhVertex(triangleIndex, 1), bvhVertex(triangleIndex, 2));
-				if (t > 0.0 && t < _distance)
-				{
-					_distance = t;
-					hit = triangleIndex;
-				}
-			}
-
+			hit = bvhIntersectLeaf(_origin, _direction, int(node0.w), int(node1.w), _distance, hit);
 			if (_anyHit && hit >= 0)
 			{
 				return hit;
@@ -135,8 +236,8 @@ int traceBvh(vec3 _origin, vec3 _direction, float _maxDistance, bool _anyHit, ou
 		else
 		{
 			// Visit the nearer child first; keep the other for later.
-			int left = first;
-			int right = first + 1;
+			int left = node + 1;
+			int right = int(node0.w);
 			float leftDistance = intersectBox(_origin, inverseDirection
 				, b_scene[left * 2].xyz, b_scene[left * 2 + 1].xyz, _distance);
 			float rightDistance = intersectBox(_origin, inverseDirection
@@ -146,9 +247,12 @@ int traceBvh(vec3 _origin, vec3 _direction, float _maxDistance, bool _anyHit, ou
 			if (visitLeft && visitRight)
 			{
 				bool leftFirst = leftDistance <= rightDistance;
+				// The stack is as deep as the tree can be (kBvhMaxDepth), so
+				// it does not overflow; the check only keeps a broken tree in
+				// bounds.
 				if (stackSize < kBvhStackSize)
 				{
-					stack[stackSize] = leftFirst ? right : left;
+					s_bvhStack[stackBase + stackSize] = leftFirst ? right : left;
 					++stackSize;
 				}
 				node = leftFirst ? left : right;
@@ -166,10 +270,34 @@ int traceBvh(vec3 _origin, vec3 _direction, float _maxDistance, bool _anyHit, ou
 			break;
 		}
 		--stackSize;
-		node = stack[stackSize];
+		node = s_bvhStack[stackBase + stackSize];
+	}
+	return hit;
+}
+#endif
+
+int traceBvh(vec3 _origin, vec3 _direction, float _maxDistance, bool _anyHit, out float _distance)
+{
+	_distance = _maxDistance;
+	if (!bvhAvailable())
+	{
+		return -1;
 	}
 
+#ifdef BVH_SHARED_STACK
+	if (!_anyHit)
+	{
+		return traceBvhSharedStack(_origin, _direction, false, _distance);
+	}
+#	ifdef RESTIR_WAVE_OPS
+	int hit = traceBvhWave(_origin, _direction, true, _distance);
+#	else
+	int hit = traceBvhStackless(_origin, _direction, true, _distance);
+#	endif
 	return hit;
+#else
+	return traceBvhStackless(_origin, _direction, _anyHit, _distance);
+#endif
 }
 
 // The triangle's plane normal, turned to face _towards (a direction from

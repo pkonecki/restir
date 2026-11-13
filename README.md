@@ -176,8 +176,9 @@ sections:
   from the command line: it accumulates N frames, lets the live settings
   settle, prints the two numbers and exits.
 - **Performance**: frames per second with a frame time plot, and the GPU time
-  of each group of passes (shadow map, G-buffer, hash grid, ReSTIR temporal
-  and spatial, denoiser, composite, tone mapping), measured with bgfx's per-view profiler.
+  of each group of passes (shadow map, G-buffer, ReSTIR DI temporal and
+  spatial, hash grid, ReSTIR GI temporal and spatial, specular GI, denoiser,
+  composite, tone mapping), measured with bgfx's per-view profiler.
   They need GPU timer queries; WebGPU offers them only in browsers that expose
   `timestamp-query`. Below them are the levers that trade quality for speed:
 
@@ -313,11 +314,12 @@ are the defaults; the settings window changes them):
    on screen. It is the smallest size times a power of two, and the size and
    the receiver's dominant normal axis are part of the cell key. Cells live
    in an open-addressing table of 65,536 slots, found with one hash and told
-   apart with a second, 32-bit checksum hash, and each lists up to 32 pixels.
+   apart with a second, 32-bit checksum hash, and each lists up to 32 pixels
+   (checksums, counts and entries share one buffer).
    Positions are jittered within the tangent plane by up to half a cell, both
    on insertion and on every lookup, so cell boundaries do not show up as
    blocks.
-2. **Temporal pass** (`shaders/fs_restir_temporal.sc`): traces two
+2. **Temporal pass** (`shaders/cs_restir_temporal.sc`): traces two
    cosine-distributed rays through the depth buffer, and the rays it cannot
    answer through the scene's BVH (below), and resamples the hits into a
    reservoir. It then combines that reservoir, using pairwise MIS and
@@ -327,7 +329,7 @@ are the defaults; the settings window changes them):
    it lies in this receiver's cell. A sample taken over from another receiver
    is tested for visibility before the result is stored as this frame's
    reservoir.
-3. **Spatial pass** (`shaders/fs_restir_spatial.sc`): combines the pixel's
+3. **Spatial pass** (`shaders/cs_restir_spatial.sc`): combines the pixel's
    reservoir with four others picked from this frame's grid cell, again with
    pairwise MIS. The MIS weights check whether each neighbour could have
    found this pixel's sample, with one screen-space visibility ray per
@@ -387,7 +389,7 @@ scene's emissive triangles and the extra point lights, goes into a light
 list (`src/lights.cpp`), sampled with ReSTIR DI (Bitterli et al. 2020) at
 full resolution (`shaders/di.sh`):
 
-1. **Temporal pass** (`shaders/fs_di_temporal.sc`): 8 candidates pick a
+1. **Temporal pass** (`shaders/cs_di_temporal.sc`): 8 candidates pick a
    light in proportion to its power and a point on it (uniform over a
    triangle), resampled by their unshadowed contribution (diffuse plus GGX
    specular at the pixel). The result is combined with the pixel's
@@ -396,7 +398,7 @@ full resolution (`shaders/di.sh`):
    frame's from its stored position, normal and camera, with visibility).
    The selected sample is tested with a shadow ray through the BVH and
    stored.
-2. **Spatial pass** (`shaders/fs_di_spatial.sc`): combines the pixel's
+2. **Spatial pass** (`shaders/cs_di_spatial.sc`): combines the pixel's
    reservoir with three from a 16-pixel disk that see the same surface,
    with pairwise MIS on the full target functions (a light sample is the
    same point for every pixel, so the shift's Jacobian is 1). It shades the
@@ -440,8 +442,9 @@ Jacobian applied to every shifted sample (`shaders/restir.sh`). Under GRIS:
   or angle.
 - **The boiling filter** (**Boiling filter**, Rendering section, as in
   RTXDI's ReSTIR GI) limits each temporal reservoir's estimate to 4 times
-  what its pixel showed last frame, or what its fresh candidates show now,
-  whichever is larger. Even with exact weights, contribution weights are
+  what its pixel showed last frame (or, where it has no history, the mean
+  estimate of its 8x8 group of pixels), or what its fresh candidates show
+  now, whichever is larger. Even with exact weights, contribution weights are
   heavy-tailed, and with multiple bounces the integrand is made of last
   frame's estimates: a reservoir with an outlying weight brightens the
   history its own sample reads its light from, and temporal reuse through
@@ -496,7 +499,11 @@ and 32 MB) and uploaded as one GPU buffer that also holds each triangle's
 diffuse albedo and emission (material factors and vertex colours, times its
 textures at the centre of its texture coordinates, read from the mip level
 that matches the triangle's size in the texture) (`src/bvh.cpp`; traversal
-in `shaders/bvh.sh`).
+in `shaders/bvh.sh`). The nodes are stored in depth-first order, with a skip
+link to the node after each subtree, so the pixel shaders traverse without a
+stack: a per-thread stack array cannot stay in registers there and spilled to
+scratch memory (Radeon GPU Profiler). The ReSTIR compute passes visit the
+nearer child first for closest-hit rays, with the stack in shared memory.
 
 A reservoir stores the triangle its sample lies on, as well as the side its
 ray came from. A sample point that is a visible surface is shaded from the
@@ -529,6 +536,46 @@ camera motion; shadow edges have a fixed softness rather than one that matches
 the size of the light; and screen-space visibility and the clamped
 reconnection Jacobian leave a bias of a few percent. This is a real-time
 demonstration, not an unbiased multi-bounce path tracer.
+
+## GPU performance
+
+The four ReSTIR passes (GI and DI, temporal and spatial) are compute
+shaders, in groups of 8x8 pixels (`shaders/compute.sh`):
+
+- **BVH rays**: closest-hit rays keep their traversal stack in shared
+  memory (40 entries per thread), visibility rays need no stack (above).
+- **The queue of BVH rays** (GI temporal pass): the fresh rays the depth
+  buffer cannot answer are queued in shared memory and traced by
+  consecutive threads, so a wave traces only when it has rays to trace,
+  instead of every wave waiting for the few lanes that need the BVH.
+- **The boiling filter** falls back to the mean estimate of the group's
+  pixels where a pixel has no history (see "Bias").
+- **No `&&`, `||` or `?:` around expensive calls**: bgfx compiles the
+  shaders as HLSL for Vulkan, Direct3D, Metal and WebGPU, and HLSL (before
+  HLSL 2021) evaluates both sides of those operators. Visibility rays that
+  should only run when a neighbour's sample was selected, for instance, ran
+  for every pixel.
+
+**Wave intrinsics** (Rendering section, Vulkan only) switches the four
+passes to variants compiled with wave (subgroup) operations, as SPIR-V 1.3,
+to measure what a per-platform path would gain (compare the pass timings
+in the Performance section with it on and off):
+
+- The queue takes one shared-memory atomic per wave (ballot and prefix
+  count) instead of one per ray.
+- The boiling filter's tile mean is a wave sum, then a sum over the waves,
+  instead of a tree reduction with six barriers.
+- Visibility rays traverse the BVH in step across the wave: each step, the
+  wave visits the smallest node any of its lanes still needs, read once at
+  a wave-uniform index for all of them. That pays off when the rays of a
+  wave are coherent (shadow rays to the same light), and costs node visits
+  when they are not.
+
+The variants use the HLSL Shader Model 6 wave functions, which bgfx's shader
+compiler turns into Vulkan subgroup operations; the same code would compile
+for Direct3D 12 with dxc, and Metal and WebGPU have equivalents (the latter
+as an optional feature). They assume that a group's waves are made of
+consecutive threads, as on every GPU we know of.
 
 ## Source layout
 

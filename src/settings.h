@@ -196,6 +196,9 @@ struct Settings
 	int referenceView = 0;  // with a reference: 0 the image, 1 the reference, 2 the error against it
 	bool emissiveLighting = true; // emissive surfaces on screen light the scene through GI
 	int rayMode = int(RayMode::Hybrid);
+	// Vulkan only: the ReSTIR compute passes' variants with wave intrinsics
+	// (shaders/compute.sh), to compare with the portable ones.
+	bool waveIntrinsics = false;
 	int directLighting = int(DirectLighting::ReStirDi);
 
 	// Biased shortcuts in the reservoir reuse (README.md, "Bias").

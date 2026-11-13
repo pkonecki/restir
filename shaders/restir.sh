@@ -78,9 +78,7 @@ uniform vec4 u_restirOptions; // x: initial candidates, y: temporal taps, z: spa
 #include "sky.sh"
 
 #define GRID_READ_ONLY
-#define GRID_CHECKSUM_STAGE 11
-#define GRID_COUNT_STAGE    12
-#define GRID_ENTRY_STAGE    13
+#define GRID_STAGE 11
 #include "hashgrid.sh"
 
 // Sample counts, set from the settings window (see settings.h).
@@ -221,8 +219,13 @@ vec3 evaluateSecondaryDirect(vec2 _uv, vec3 _position, vec3 _normal)
 	vec3 toLight = u_lightPosition.xyz - _position;
 	float distanceSquared = max(dot(toLight, toLight), 0.01 * kSceneScale * kSceneScale);
 	float normalLight = max(dot(_normal, toLight * inversesqrt(distanceSquared)), 0.0);
-	return albedo * (u_lightColor.rgb / distanceSquared) * (normalLight / kPi)
-		* (normalLight > 0.0 ? lightVisibilityHard(_position, _normal) : 0.0);
+	vec3 direct = vec3_splat(0.0);
+	if (normalLight > 0.0)
+	{
+		direct = albedo * (u_lightColor.rgb / distanceSquared) * (normalLight / kPi)
+			* lightVisibilityHard(_position, _normal);
+	}
+	return direct;
 }
 
 // The same for a point that is not a visible surface, from its triangle.
@@ -231,8 +234,13 @@ vec3 evaluateWorldDirect(vec3 _albedo, vec3 _position, vec3 _normal)
 	vec3 toLight = u_lightPosition.xyz - _position;
 	float distanceSquared = max(dot(toLight, toLight), 0.01 * kSceneScale * kSceneScale);
 	float normalLight = max(dot(_normal, toLight * inversesqrt(distanceSquared)), 0.0);
-	return _albedo * (u_lightColor.rgb / distanceSquared) * (normalLight / kPi)
-		* (normalLight > 0.0 ? lightVisibilityHard(_position, _normal) : 0.0);
+	vec3 direct = vec3_splat(0.0);
+	if (normalLight > 0.0)
+	{
+		direct = _albedo * (u_lightColor.rgb / distanceSquared) * (normalLight / kPi)
+			* lightVisibilityHard(_position, _normal);
+	}
+	return direct;
 }
 
 // Larger than any triangle id (+-(t + 1), t < 2^24).
@@ -501,14 +509,22 @@ bool evaluateSample(
 		return true;
 	}
 
-	// Off-screen points have no history to take bounce light from.
-	vec3 radiance = visibleSurface
-		? evaluateSecondaryDirect(sampleUv, _samplePosition, _sampleNormal)
+	// Not a ?: here, nor && or || around expensive calls anywhere in these
+	// shaders: bgfx compiles them as HLSL for most renderers (SPIR-V, D3D,
+	// Metal, WGSL), and HLSL evaluates both sides of those operators.
+	vec3 radiance;
+	if (visibleSurface)
+	{
+		radiance = evaluateSecondaryDirect(sampleUv, _samplePosition, _sampleNormal)
 			+ previousIndirect(_samplePosition, _sampleNormal, diffuseAlbedo(sampleUv))
-			+ texture2DLod(s_surfaceLight, sampleUv, 0.0).rgb * u_lightingInfo.x
-		: evaluateWorldDirect(bvhTriangleAlbedo(triangleIndex), _samplePosition, _sampleNormal)
+			+ texture2DLod(s_surfaceLight, sampleUv, 0.0).rgb * u_lightingInfo.x;
+	}
+	else
+	{
+		radiance = evaluateWorldDirect(bvhTriangleAlbedo(triangleIndex), _samplePosition, _sampleNormal)
 			+ previousIndirect(_samplePosition, _sampleNormal, bvhTriangleAlbedo(triangleIndex))
 			+ bvhTriangleEmission(triangleIndex) * u_lightingInfo.y;
+	}
 	_contribution = _receiverAlbedo * radiance * (receiverCosine / kPi);
 	return true;
 }
@@ -559,7 +575,11 @@ bool isVisible(vec3 _receiverPosition, vec3 _receiverNormal, vec3 _samplePositio
 	if (sky)
 	{
 		float occluderDistance = 0.0;
-		visible = bvhAvailable() && traceBvh(origin, direction, kMaxBvhRayDistance, true, occluderDistance) < 0;
+		visible = false;
+		if (bvhAvailable())
+		{
+			visible = traceBvh(origin, direction, kMaxBvhRayDistance, true, occluderDistance) < 0;
+		}
 	}
 	else if (kRayMode == RAY_MODE_BVH && bvhAvailable())
 	{
@@ -828,10 +848,12 @@ void addNeighbour(
 	{
 		float neighbourGeometry = geometryTerm(
 			_neighbour.receiverPosition, _neighbour.receiverNormal, _mis.canonicalPosition, _mis.canonicalNormal, _mis.canonicalId);
-		if (neighbourGeometry > 0.0
-		&&  !isVisible(_neighbour.receiverPosition, _neighbour.receiverNormal, _mis.canonicalPosition, _mis.canonicalId))
+		if (neighbourGeometry > 0.0)
 		{
-			neighbourGeometry = 0.0;
+			if (!isVisible(_neighbour.receiverPosition, _neighbour.receiverNormal, _mis.canonicalPosition, _mis.canonicalId))
+			{
+				neighbourGeometry = 0.0;
+			}
 		}
 
 		float canonicalDensity = _mis.pairCanonical * _mis.canonicalGeometry;
@@ -842,11 +864,15 @@ void addNeighbour(
 	}
 
 	// Neighbour sample, shifted to this receiver.
-	vec3 contribution;
-	vec3 sampleNormal;
-	if (_neighbour.weight > 0.0
-	&&  evaluateSample(_position, _normal, _albedo, _neighbour.samplePosition, _neighbour.sampleId
-		, contribution, sampleNormal))
+	vec3 contribution = vec3_splat(0.0);
+	vec3 sampleNormal = vec3(0.0, 0.0, 1.0);
+	bool shifted = false;
+	if (_neighbour.weight > 0.0)
+	{
+		shifted = evaluateSample(_position, _normal, _albedo, _neighbour.samplePosition, _neighbour.sampleId
+			, contribution, sampleNormal);
+	}
+	if (shifted)
 	{
 		float target = luminance(contribution);
 		float jacobian = reconnectionJacobian(
@@ -893,9 +919,12 @@ float finishPairwiseMis(
 		? _mis.combined.weightSum / (_mis.totalCount * _mis.combined.target)
 		: 0.0;
 
-	if (combinedWeight > 0.0 && _mis.neighbourSelected && !isVisible(_position, _normal, _mis.combined.position, _mis.combined.id))
+	if (combinedWeight > 0.0 && _mis.neighbourSelected)
 	{
-		combinedWeight = 0.0;
+		if (!isVisible(_position, _normal, _mis.combined.position, _mis.combined.id))
+		{
+			combinedWeight = 0.0;
+		}
 	}
 
 	return combinedWeight;

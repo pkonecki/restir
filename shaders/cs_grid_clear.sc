@@ -6,9 +6,7 @@
 
 #include <bgfx_compute.sh>
 
-#define GRID_CHECKSUM_STAGE 0
-#define GRID_COUNT_STAGE    1
-#define GRID_ENTRY_STAGE    2
+#define GRID_STAGE 0
 #include "hashgrid.sh"
 
 NUM_THREADS(64, 1, 1)
@@ -17,7 +15,7 @@ void main()
 	uint slot = gl_GlobalInvocationID.x;
 	if (slot < kGridTableSize)
 	{
-		b_gridChecksums[slot] = 0u;
-		b_gridCounts[slot] = 0u;
+		b_grid[slot] = 0u;
+		b_grid[kGridCountBase + slot] = 0u;
 	}
 }

@@ -6,9 +6,12 @@
 //
 // Everything goes into one array of vec4s, uploaded as a single GPU buffer:
 //
-//   nodes      2 vec4 each: (min.xyz, first), (max.xyz, count)
-//              count > 0: a leaf with triangles [first, first + count)
-//              count = 0: children at nodes first and first + 1
+//   nodes      2 vec4 each, in depth-first order: (min.xyz, a), (max.xyz, b)
+//              b >= 0: a leaf with triangles [a, a + b)
+//              b < 0:  an interior node; its left child is the next node,
+//                      its right child is node a, and -b - 1 is the node
+//                      after its subtree (where to go once done with it)
+//              A leaf's subtree ends with itself: next is the node after it.
 //   triangles  4 vec4 each: (v0.xyz, material), (v1.xyz, emission.r),
 //              (v2.xyz, emission.g), (diffuse albedo.rgb, emission.b), in BVH
 //              order; albedo and emission come from the material's textures
@@ -43,7 +46,8 @@ struct SceneBvh
 };
 
 // The deepest the builder goes; leaves below it hold more triangles. The
-// traversal stack in shaders/bvh.sh must be at least this deep.
+// traversal stack of the compute passes (shaders/bvh.sh) must be at least
+// this deep.
 constexpr uint32_t kBvhMaxDepth = 40;
 
 SceneBvh buildBvh(const SceneMesh& _mesh);
