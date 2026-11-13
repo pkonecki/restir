@@ -421,30 +421,52 @@ Jacobian applied to every shifted sample (`shaders/restir.sh`). Under GRIS:
 - **Capping M at 20 adds no bias.** Any confidence weights are allowed as
   long as the MIS weights sum to one; the cap only trades how much the
   history counts against how fast it adapts.
+- **The Jacobian uses the same distances as the MIS weights.** It used to
+  clamp both distances to a minimum, while the geometry terms of the MIS
+  weights used the true ones. A sample found very close to its receiver
+  (along corners and edges) then got a Jacobian up to a hundred times too
+  large when moved to a farther receiver, while its MIS weight still handed
+  it the whole pair. Temporal reuse through the hash grid gained light
+  along corners that way, multiple bounces fed back on it, and it was one of
+  the two causes of light slowly spreading from corners over hundreds of
+  frames, visible first in the reservoir weights (panning away reset it, as
+  the reservoirs were dropped). TAA's camera jitter made it much more
+  likely, by moving the receivers over the whole pixel, arbitrarily close to
+  the walls. The other cause is handled by the boiling filter (below).
 - **The Jacobian stays clamped** at 10 (**Clamp Jacobian**, Rendering
-  section). A shifted sample's MIS weight does fall as its Jacobian grows,
-  but the bound on their product is loose: without the clamp, rare samples
-  near corners get through with very large weights, temporal reuse through
-  the hash grid keeps and spreads them, multiple bounces feed their light
-  back, and over a few hundred frames the lighting runs away from a spot
-  outwards (panning away resets it, as the reservoirs are dropped). The
-  clamp costs a slight darkening where samples are reused across large
-  changes in distance or angle.
+  section), which bounds how much weight one shift can add, at the cost of a
+  slight darkening where samples are reused across large changes in distance
+  or angle.
+- **The boiling filter** (**Boiling filter**, Rendering section, as in
+  RTXDI's ReSTIR GI) limits each temporal reservoir's estimate to 4 times
+  what its pixel showed last frame, or what its fresh candidates show now,
+  whichever is larger. Even with exact weights, contribution weights are
+  heavy-tailed, and with multiple bounces the integrand is made of last
+  frame's estimates: a reservoir with an outlying weight brightens the
+  history its own sample reads its light from, and temporal reuse through
+  the hash grid keeps and spreads it. In the Cornell box with TAA on and
+  the Jacobian fixed, the light still spread from corners in about half of
+  the long runs without the filter (within 600 to 1,100 frames), and in most
+  with the Jacobian clamp off as well; with the filter, none of the runs did
+  over 2,000 frames, the clamp on or off. It only acts on outliers: the
+  defaults measure -0.42% against the reference with it and -0.05% without,
+  about the noise of the measurement, and a relative MSE of 0.00120.
 - **Clamp outliers** caps each pixel's estimate at 8 before accumulation, as
   before. It is biased but cheap insurance against fireflies; in the Cornell
   box it changes the mean by 0.05%.
-- Fresh rays leave from slightly above the receiver. Their density is now
+- Fresh rays leave from slightly above the receiver. Their density is
   converted to the solid angle at the receiver itself (the measure of the
-  target function), instead of taking the cosine from the receiver, which
-  overstated the density of nearby hits and darkened every fresh sample
-  slightly (about 0.8% in the Cornell box).
+  target function), through the density per unit area at the hit point, so
+  with the cosine there as seen from each point: for a hit next to a
+  receiver close to a wall, the two cosines differ a lot.
 
 Setting both tap counts to 0 turns reuse off: each pixel then uses its fresh
 candidates alone, which is plain, unbiased Monte Carlo (given the same rays)
 and makes a reference to measure the reuse against. In the Cornell box, with
 the light and camera at their defaults, BVH rays (so that visibility is
 exact), multiple bounces, the denoiser and the Jacobian clamp off, and the
-mean of the indirect light over 25 frames (frames 60 to 420):
+mean of the indirect light over 25 frames (frames 60 to 420), measured
+before the Jacobian fix above:
 
 | Reuse | vs. no reuse |
 | --- | --- |
@@ -454,17 +476,13 @@ mean of the indirect light over 25 frames (frames 60 to 420):
 | Temporal only, grid, 1 / 2 / 4 taps | +0.28% / +0.90% / +1.57% |
 | Defaults (grid, 2 temporal and 4 spatial taps) | +0.86% |
 
-So one hop between receivers is unbiased to within the measurement, but
-temporal reuse through the hash grid, where reservoirs keep hopping between
-receivers frame after frame, gains about 1% of light, growing with the
-number of taps. With multiple bounces on, that gain feeds back on itself:
-without the Jacobian clamp it was the start of the runaway described above,
-which takes over the whole Cornell box within about 1,500 frames. The clamp
-stops it (measured at frame 1,000: the same brightness as at frame 100).
-Where exactly the gain arises is not pinned down: it is not screen-space
-visibility (the numbers above use the BVH), clipping, or a pixel reusing its
-own reservoir, and the error view of the reference (above) puts it in
-corners and contact shadows, where the clamp acts.
+The gain of temporal reuse through the hash grid, which the error view put
+in corners and contact shadows, was the Jacobian mismatch. With the fix,
+temporal reuse alone through the grid (2 or 4 taps, same settings as above)
+measures -0.10% and +0.36% against a 256-frame reference (`--measure 256`,
+mean over the frame), within the noise of the measurement, and the defaults
+(before the boiling filter) -0.05% instead of +0.21%, with the relative MSE
+down from 0.00134 to 0.00129.
 
 ### Off-screen geometry: the BVH
 

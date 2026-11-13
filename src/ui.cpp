@@ -252,10 +252,12 @@ SettingsWindowOutput drawSettingsWindow(const SettingsWindowInput& _input, Setti
 		}
 		ImGui::SetItemTooltip("Where reservoirs are reused from.");
 		ImGui::Checkbox("Clamp Jacobian", &_settings.clampJacobian);
-		ImGui::SetItemTooltip("Cap the reconnection Jacobian at %.0f. Needed for stability: without\nit, rare samples reused across large changes in distance or angle\n(near corners) feed back through the temporal reuse and multiple\nbounces until the light runs away. It darkens those spots slightly.", kJacobianClamp);
+		ImGui::SetItemTooltip("Cap the reconnection Jacobian at %.0f: bounds the weight a sample\ngains when reused across a large change in distance or angle\n(near corners), which keeps such samples from lingering in the\ntemporal reuse. It darkens those spots slightly (biased).", kJacobianClamp);
 		ImGui::SameLine();
 		ImGui::Checkbox("Clamp outliers", &_settings.clampOutliers);
 		ImGui::SetItemTooltip("Cap each pixel's estimate at %.0f before accumulation, as the\nexample always did: fewer fireflies, at the cost of losing some\nlight (biased).", kOutlierClamp);
+		ImGui::Checkbox("Boiling filter", &_settings.boilingFilter);
+		ImGui::SetItemTooltip("Limit each temporal reservoir's estimate to %.0f times what its pixel\nshowed last frame (or its fresh candidates show now). Without it, rare\noverweighted samples feed back through temporal reuse and multiple\nbounces, and the light slowly spreads from corners. Slightly biased.", kBoilingFilter);
 
 		ImGui::Combo("View (V)", &_settings.debugView, kDebugViewNames, int(DebugView::Count));
 		ImGui::SetItemTooltip("%s", kDebugViewHelp[_settings.debugView]);

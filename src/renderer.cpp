@@ -435,6 +435,7 @@ void Renderer::render(const FrameInput& _input, const Settings& _requestedSettin
 		effectiveSettings.taa = false;
 		effectiveSettings.clampJacobian = false;
 		effectiveSettings.clampOutliers = false;
+		effectiveSettings.boilingFilter = false;
 		effectiveSettings.diSpatialTaps = 0;
 		m_diValid = false; // no DI temporal reuse either
 	}
@@ -499,7 +500,7 @@ void Renderer::render(const FrameInput& _input, const Settings& _requestedSettin
 	const float sceneInfo[] =
 	{
 		sceneScale,
-		_settings.emissiveLighting ? 1.0f : 0.0f,
+		_settings.boilingFilter ? kBoilingFilter : 0.0f,
 		_settings.clampJacobian ? kJacobianClamp : 0.0f,
 		_settings.clampOutliers ? kOutlierClamp : 0.0f,
 	};

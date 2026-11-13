@@ -104,18 +104,26 @@ void main()
 		float target = luminance(contribution);
 		// The density of the hit point, in solid angle at the receiver (the
 		// measure of the target function). The ray left from rayOrigin, a
-		// little above the receiver, so its cosine density there is converted:
-		// pdf(position) = pdf(rayOrigin) * d(position)^2 / d(rayOrigin)^2 (the
-		// cosine at the hit point cancels). Taking the cosine from the
-		// receiver instead overstates the density of nearby hits, darkening
-		// every fresh sample a little, most along corners.
+		// little above the receiver, so its cosine density there is converted
+		// through the density per unit area at the hit point:
+		//   pdf(position) = pdf(rayOrigin) * (cos(hit, origin) / d(origin)^2)
+		//                                  / (cos(hit, position) / d(position)^2)
+		// The cosines at the hit point only agree for distant hits; for hits
+		// next to a receiver close to a wall they differ a lot.
 		// A direction to the sky is the same from both points.
-		vec3 fromReceiver = hitPosition - position;
-		vec3 fromOrigin = hitPosition - rayOrigin;
-		float sourcePdf = isSkySample(hitId)
-			? dot(normal, direction) / kPi
-			: dot(normal, direction) / kPi
-				* dot(fromReceiver, fromReceiver) / max(dot(fromOrigin, fromOrigin), kMinDistanceSquared * 0.01);
+		float sourcePdf = dot(normal, direction) / kPi;
+		if (!isSkySample(hitId))
+		{
+			vec3 fromReceiver = hitPosition - position;
+			vec3 fromOrigin = hitPosition - rayOrigin;
+			float receiverSquared = max(dot(fromReceiver, fromReceiver), kMinDistanceSquared * 0.01);
+			float originSquared = max(dot(fromOrigin, fromOrigin), kMinDistanceSquared * 0.01);
+			float hitCosineOrigin = max(-dot(hitNormal, fromOrigin), 0.0) * inversesqrt(originSquared);
+			float hitCosineReceiver = -dot(hitNormal, fromReceiver) * inversesqrt(receiverSquared);
+			sourcePdf = hitCosineReceiver > 0.0001
+				? sourcePdf * (hitCosineOrigin / originSquared) * (receiverSquared / hitCosineReceiver)
+				: 0.0;
+		}
 		if (target > 0.0 && sourcePdf > 0.0001)
 		{
 			updateReservoir(canonical, contribution, hitPosition, hitNormal, hitId, target, target / sourcePdf, randomSelect);
@@ -180,6 +188,32 @@ void main()
 	}
 
 	float combinedWeight = finishPairwiseMis(mis, position, normal, canonical, canonicalWeight, nextRandom(rng));
+
+	// Boiling filter (as in RTXDI's ReSTIR GI). The reservoir's estimate
+	// f * W may not exceed kBoilingFilter times what this pixel showed last
+	// frame (its accumulated irradiance, times the albedo), or what its fresh
+	// candidates show now, whichever is larger: the fresh estimate is
+	// unbiased and independent of the history, so the lighting can still
+	// change. Contribution weights are heavy-tailed, and with multiple bounces
+	// the integrand is made of last frame's estimates: a reservoir with an
+	// outlying weight brightens the history its own sample reads its light
+	// from, and temporal reuse through the hash grid keeps it and spreads it.
+	// Without the filter, the light then slowly spreads from corners over
+	// hundreds of frames (more readily with TAA's jitter, which keeps moving
+	// the receivers). The filter only acts on outliers, so it costs little
+	// light (README.md, "Bias").
+	vec3 historyColor;
+	if (kBoilingFilter > 0.0 && historyValid && combinedWeight > 0.0
+	&&  historyIrradiance(previousUv, position, normal, historyColor))
+	{
+		float reference = max(luminance(historyColor * albedo), canonical.target * canonicalWeight);
+		float estimate = mis.combined.target * combinedWeight;
+		float limit = kBoilingFilter * reference;
+		if (estimate > limit)
+		{
+			combinedWeight *= limit / estimate;
+		}
+	}
 
 	gl_FragData[0] = vec4(mis.combined.position, mis.totalCount);
 	gl_FragData[1] = vec4(position, combinedWeight);

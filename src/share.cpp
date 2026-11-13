@@ -113,6 +113,7 @@ std::vector<Field> fields(Settings& _settings)
 		boolField("grid", _settings.worldSpaceReuse),
 		boolField("cj", _settings.clampJacobian),
 		boolField("co", _settings.clampOutliers),
+		boolField("bf", _settings.boilingFilter),
 		intField("view", _settings.debugView, 0, int(DebugView::Count) - 1),
 		intField("tm", _settings.tonemapper, 0, int(Tonemapper::Count) - 1),
 		floatField("ev", _settings.exposureEv),

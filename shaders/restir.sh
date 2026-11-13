@@ -61,7 +61,7 @@ uniform vec4 u_lightPosition;
 uniform vec4 u_lightColor;
 uniform vec4 u_frameInfo;  // x: frame index, y: history valid, z: origin bottom-left, w: multiple bounces
 uniform vec4 u_screenInfo; // xy: GI target size, zw: GI texel size
-uniform vec4 u_sceneInfo;  // x: scene scale (see renderer.cpp), z: Jacobian clamp, w: outlier clamp
+uniform vec4 u_sceneInfo;  // x: scene scale (see renderer.cpp), y: boiling filter, z: Jacobian clamp, w: outlier clamp
 // How emitters and the light list reach the GI. x scales s_surfaceLight,
 // which holds either the G-buffer's emission (emitters lit through GI only)
 // or the diffuse light from ReSTIR DI (then emission is direct light, which
@@ -104,6 +104,7 @@ uniform vec4 u_restirOptions; // x: initial candidates, y: temporal taps, z: spa
 #define kSpatialRadius 12.0    // screen-space reuse only, in GI texels
 #define kJacobianClamp u_sceneInfo.z // 0: unclamped (unbiased), else the largest reconnection Jacobian
 #define kOutlierClamp u_sceneInfo.w  // 0: none, else the largest estimate the spatial pass hands on
+#define kBoilingFilter u_sceneInfo.y // 0: off, else the largest temporal reservoir estimate relative to its pixel's history
 #define kRayBias (0.02 * kSceneScale)          // origin offset along the normal
 #define kSurfaceBias (0.01 * kSceneScale)      // depth a ray must sink below a surface to count as behind it
 #define kMaxRayDistance (3.6 * kSceneScale)
@@ -286,6 +287,31 @@ vec3 previousIndirect(vec3 _position, vec3 _normal, vec3 _albedo)
 	}
 
 	return texture2DLod(s_historyColor, uv, 0.0).rgb * _albedo;
+}
+
+// Last frame's (denoised, demodulated) irradiance at a texel, if that texel
+// held the same surface as this receiver: close by, on the same plane.
+bool historyIrradiance(vec2 _uv, vec3 _position, vec3 _normal, out vec3 _irradiance)
+{
+	_irradiance = vec3_splat(0.0);
+	if (!isOnScreen(_uv))
+	{
+		return false;
+	}
+
+	vec3 receiverPosition = texture2DLod(s_historyReceiver, _uv, 0.0).xyz;
+	vec3 receiverNormal = texture2DLod(s_historyNormal, _uv, 0.0).xyz;
+	vec3 offset = receiverPosition - _position;
+	if (dot(receiverNormal, receiverNormal) < 0.5
+	||  dot(offset, offset) > kBounceRadius * kBounceRadius
+	||  abs(dot(offset, _normal)) > kReceiverPlane
+	||  dot(normalize(receiverNormal), _normal) < kReceiverNormal)
+	{
+		return false;
+	}
+
+	_irradiance = texture2DLod(s_historyColor, _uv, 0.0).rgb;
+	return true;
 }
 
 // How far the ray point lies behind the visible surface at its pixel.
@@ -556,17 +582,24 @@ bool isVisible(vec3 _receiverPosition, vec3 _receiverNormal, vec3 _samplePositio
 
 // Reconnection Jacobian |d(omega here) / d(omega there)| for moving a sample
 // point from the receiver it was found at to this one. Zero if the sample does
-// not face the original receiver.
+// not face the original receiver, or if either receiver is closer to the
+// sample than geometryTerm accepts.
 //
-// It is clamped (kJacobianClamp, on by default). The pairwise MIS weight of
-// a shifted sample (below) does fall with the geometry term at the receiver
-// it came from as the Jacobian grows, but the bound on their product is
-// loose (tens of times the canonical weight). Near corners, rare samples get
-// through with weights that large; temporal reuse through the hash grid keeps
-// them alive and spreads them, multiple bounces feed their light back, and
-// the lighting runs away over hundreds of frames, from a spot outwards.
-// The clamp costs a slight darkening where samples are reused across large
-// changes in distance or angle.
+// It must use the same distances as the geometry terms the pairwise MIS
+// weights are made of (below). It used to clamp both distances to at least
+// sqrt(kMinDistanceSquared): a sample found closer than that to its receiver
+// (along corners and edges) then got a Jacobian up to kMinDistanceSquared /
+// distance^2 times too large when moved to a farther receiver, while its MIS
+// weight, from the true geometry term, still handed it the whole pair. That
+// made temporal reuse through the hash grid gain light along corners (about
+// 1% over the frame), which multiple bounces fed back on, and it was one of
+// the causes of light slowly spreading from corners with TAA on: the camera
+// jitter moves receivers over the whole pixel, arbitrarily close to the
+// walls. The other is handled by the boiling filter (fs_restir_temporal.sc).
+//
+// It is also clamped (kJacobianClamp, on by default), which bounds how much
+// weight one shift can add; that costs a slight darkening where samples are
+// reused across large changes in distance or angle.
 float reconnectionJacobian(vec3 _here, vec3 _there, vec3 _samplePosition, vec3 _sampleNormal, float _sampleId)
 {
 	if (isSkySample(_sampleId))
@@ -577,8 +610,13 @@ float reconnectionJacobian(vec3 _here, vec3 _there, vec3 _samplePosition, vec3 _
 
 	vec3 toHere = _here - _samplePosition;
 	vec3 toThere = _there - _samplePosition;
-	float hereSquared = max(dot(toHere, toHere), kMinDistanceSquared);
-	float thereSquared = max(dot(toThere, toThere), kMinDistanceSquared);
+	float hereSquared = dot(toHere, toHere);
+	float thereSquared = dot(toThere, toThere);
+	if (hereSquared < kMinDistanceSquared * 0.01 || thereSquared < kMinDistanceSquared * 0.01)
+	{
+		return 0.0;
+	}
+
 	float cosineHere = dot(_sampleNormal, toHere) * inversesqrt(hereSquared);
 	float cosineThere = dot(_sampleNormal, toThere) * inversesqrt(thereSquared);
 	if (cosineThere <= 0.001)

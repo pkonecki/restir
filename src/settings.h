@@ -28,6 +28,7 @@ constexpr uint16_t kShadowFaceSizes[] = { 256, 512, 1024, 2048 };
 // Values of the optional clamps in the reservoir reuse (see shaders/restir.sh).
 constexpr float kJacobianClamp = 10.0f;
 constexpr float kOutlierClamp = 8.0f;
+constexpr float kBoilingFilter = 4.0f; // largest temporal reservoir estimate, relative to the pixel's history
 
 // Denoiser a-trous iterations, with tap spacings 1, 2, 4, 8, 16.
 constexpr int kMaxAtrousIterations = 5;
@@ -198,8 +199,9 @@ struct Settings
 	int directLighting = int(DirectLighting::ReStirDi);
 
 	// Biased shortcuts in the reservoir reuse (README.md, "Bias").
-	bool clampJacobian = true;  // cap the reconnection Jacobian at kJacobianClamp (off: runaway, see restir.sh)
+	bool clampJacobian = true;  // cap the reconnection Jacobian at kJacobianClamp (see restir.sh)
 	bool clampOutliers = true;  // cap each pixel's estimate at kOutlierClamp (as the example always did)
+	bool boilingFilter = true;  // limit temporal reservoirs to kBoilingFilter times their pixel's history (see restir.sh)
 
 	int debugView = int(DebugView::Final);
 
