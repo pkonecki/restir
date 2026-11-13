@@ -421,12 +421,15 @@ Jacobian applied to every shifted sample (`shaders/restir.sh`). Under GRIS:
 - **Capping M at 20 adds no bias.** Any confidence weights are allowed as
   long as the MIS weights sum to one; the cap only trades how much the
   history counts against how fast it adapts.
-- **The Jacobian needs no clamp.** A shifted sample's MIS weight falls with
-  the geometry term at the receiver it came from as fast as the Jacobian
-  grows, so their product stays bounded. The example used to clamp it at 10,
-  which darkens wherever samples are reused across large changes in distance
-  or angle; **Clamp Jacobian** (Rendering section) restores that for
-  comparison, and is off by default.
+- **The Jacobian stays clamped** at 10 (**Clamp Jacobian**, Rendering
+  section). A shifted sample's MIS weight does fall as its Jacobian grows,
+  but the bound on their product is loose: without the clamp, rare samples
+  near corners get through with very large weights, temporal reuse through
+  the hash grid keeps and spreads them, multiple bounces feed their light
+  back, and over a few hundred frames the lighting runs away from a spot
+  outwards (panning away resets it, as the reservoirs are dropped). The
+  clamp costs a slight darkening where samples are reused across large
+  changes in distance or angle.
 - **Clamp outliers** caps each pixel's estimate at 8 before accumulation, as
   before. It is biased but cheap insurance against fireflies; in the Cornell
   box it changes the mean by 0.05%.
@@ -440,8 +443,8 @@ Setting both tap counts to 0 turns reuse off: each pixel then uses its fresh
 candidates alone, which is plain, unbiased Monte Carlo (given the same rays)
 and makes a reference to measure the reuse against. In the Cornell box, with
 the light and camera at their defaults, BVH rays (so that visibility is
-exact), multiple bounces and the denoiser off, and the mean of the indirect
-light over 25 frames:
+exact), multiple bounces, the denoiser and the Jacobian clamp off, and the
+mean of the indirect light over 25 frames (frames 60 to 420):
 
 | Reuse | vs. no reuse |
 | --- | --- |
@@ -454,9 +457,14 @@ light over 25 frames:
 So one hop between receivers is unbiased to within the measurement, but
 temporal reuse through the hash grid, where reservoirs keep hopping between
 receivers frame after frame, gains about 1% of light, growing with the
-number of taps. Multiple bounces feed that back and roughly double it. The
-source is not found yet: it is not screen-space visibility (the numbers
-above use the BVH), clipping, or a pixel reusing its own reservoir.
+number of taps. With multiple bounces on, that gain feeds back on itself:
+without the Jacobian clamp it was the start of the runaway described above,
+which takes over the whole Cornell box within about 1,500 frames. The clamp
+stops it (measured at frame 1,000: the same brightness as at frame 100).
+Where exactly the gain arises is not pinned down: it is not screen-space
+visibility (the numbers above use the BVH), clipping, or a pixel reusing its
+own reservoir, and the error view of the reference (above) puts it in
+corners and contact shadows, where the clamp acts.
 
 ### Off-screen geometry: the BVH
 

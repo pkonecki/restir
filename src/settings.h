@@ -198,7 +198,7 @@ struct Settings
 	int directLighting = int(DirectLighting::ReStirDi);
 
 	// Biased shortcuts in the reservoir reuse (README.md, "Bias").
-	bool clampJacobian = false; // cap the reconnection Jacobian at kJacobianClamp
+	bool clampJacobian = true;  // cap the reconnection Jacobian at kJacobianClamp (off: runaway, see restir.sh)
 	bool clampOutliers = true;  // cap each pixel's estimate at kOutlierClamp (as the example always did)
 
 	int debugView = int(DebugView::Final);

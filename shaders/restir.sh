@@ -558,11 +558,15 @@ bool isVisible(vec3 _receiverPosition, vec3 _receiverNormal, vec3 _samplePositio
 // point from the receiver it was found at to this one. Zero if the sample does
 // not face the original receiver.
 //
-// It needs no clamp to stay stable: the pairwise MIS weight of a shifted
-// sample (below) falls with the geometry term at the receiver it came from
-// as fast as the Jacobian grows, so their product stays bounded. Clamping it
-// (optional, for comparison) darkens wherever samples are reused across
-// large changes in distance or angle, such as near corners.
+// It is clamped (kJacobianClamp, on by default). The pairwise MIS weight of
+// a shifted sample (below) does fall with the geometry term at the receiver
+// it came from as the Jacobian grows, but the bound on their product is
+// loose (tens of times the canonical weight). Near corners, rare samples get
+// through with weights that large; temporal reuse through the hash grid keeps
+// them alive and spreads them, multiple bounces feed their light back, and
+// the lighting runs away over hundreds of frames, from a spot outwards.
+// The clamp costs a slight darkening where samples are reused across large
+// changes in distance or angle.
 float reconnectionJacobian(vec3 _here, vec3 _there, vec3 _samplePosition, vec3 _sampleNormal, float _sampleId)
 {
 	if (isSkySample(_sampleId))

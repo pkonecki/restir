@@ -252,7 +252,7 @@ SettingsWindowOutput drawSettingsWindow(const SettingsWindowInput& _input, Setti
 		}
 		ImGui::SetItemTooltip("Where reservoirs are reused from.");
 		ImGui::Checkbox("Clamp Jacobian", &_settings.clampJacobian);
-		ImGui::SetItemTooltip("Cap the reconnection Jacobian at %.0f, as the example used to.\nNot needed for stability (the pairwise MIS weights bound it);\nit darkens where samples are reused across large changes in\ndistance or angle, such as near corners.", kJacobianClamp);
+		ImGui::SetItemTooltip("Cap the reconnection Jacobian at %.0f. Needed for stability: without\nit, rare samples reused across large changes in distance or angle\n(near corners) feed back through the temporal reuse and multiple\nbounces until the light runs away. It darkens those spots slightly.", kJacobianClamp);
 		ImGui::SameLine();
 		ImGui::Checkbox("Clamp outliers", &_settings.clampOutliers);
 		ImGui::SetItemTooltip("Cap each pixel's estimate at %.0f before accumulation, as the\nexample always did: fewer fireflies, at the cost of losing some\nlight (biased).", kOutlierClamp);
