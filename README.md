@@ -503,7 +503,8 @@ in `shaders/bvh.sh`). The nodes are stored in depth-first order, with a skip
 link to the node after each subtree, so the pixel shaders traverse without a
 stack: a per-thread stack array cannot stay in registers there and spilled to
 scratch memory (Radeon GPU Profiler). The ReSTIR compute passes visit the
-nearer child first for closest-hit rays, with the stack in shared memory.
+nearer child first for closest-hit rays, with a short stack in shared memory
+(below).
 
 A reservoir stores the triangle its sample lies on, as well as the side its
 ray came from. A sample point that is a visible surface is shaded from the
@@ -542,8 +543,14 @@ demonstration, not an unbiased multi-bounce path tracer.
 The four ReSTIR passes (GI and DI, temporal and spatial) are compute
 shaders, in groups of 8x8 pixels (`shaders/compute.sh`):
 
-- **BVH rays**: closest-hit rays keep their traversal stack in shared
-  memory (40 entries per thread), visibility rays need no stack (above).
+- **BVH rays**: closest-hit rays (GI temporal) keep a short traversal stack
+  in shared memory, 8 entries per thread. Shared memory limits how many
+  groups a GPU runs at once: with a 40-entry stack, GI temporal ran 2 of 16
+  waves per SIMD (Radeon GPU Profiler). When the stack overflows, its
+  oldest entry is dropped and the traversal finishes stackless from the root
+  with the nearest hit so far, which stays exact (in Sponza, about 1 ray in
+  100 overflows). Visibility rays need no stack (above). The pass uses
+  about 4.5 KB of shared memory per group.
 - **The queue of BVH rays** (GI temporal pass): the fresh rays the depth
   buffer cannot answer are queued in shared memory and traced by
   consecutive threads, so a wave traces only when it has rays to trace,

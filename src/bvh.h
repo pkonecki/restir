@@ -45,9 +45,7 @@ struct SceneBvh
 	uint32_t m_depth = 0;          // of the deepest leaf, root = 1
 };
 
-// The deepest the builder goes; leaves below it hold more triangles. The
-// traversal stack of the compute passes (shaders/bvh.sh) must be at least
-// this deep.
+// The deepest the builder goes; leaves below it hold more triangles.
 constexpr uint32_t kBvhMaxDepth = 40;
 
 SceneBvh buildBvh(const SceneMesh& _mesh);

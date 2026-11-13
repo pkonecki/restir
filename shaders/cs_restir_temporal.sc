@@ -36,6 +36,7 @@
 
 #define COMPUTE_GROUP_SUM
 #define COMPUTE_GROUP_QUEUE
+#define BVH_SHARED_STACK 64 // kGroupThreads
 #include "compute.sh"
 
 SAMPLER2D(s_historySample, 3); // last frame's sample position + M
@@ -47,11 +48,11 @@ IMAGE2D_WO(o_sample, rgba32f, 4);
 IMAGE2D_WO(o_receiver, rgba32f, 8);
 IMAGE2D_WO(o_normal, rgba32f, 10);
 
-// The group's queue of BVH rays: origin, direction, and the result
-// (triangle index or -1, distance).
+// The group's queue of BVH rays: origin and direction. The thread that
+// traces a ray writes the result (triangle index or -1, distance) over its
+// origin, which nothing reads after it.
 SHARED vec4 s_queueOrigin[kGroupThreads];
 SHARED vec4 s_queueDirection[kGroupThreads];
-SHARED vec2 s_queueResult[kGroupThreads];
 
 NUM_THREADS(kGroupSize, kGroupSize, 1)
 void main()
@@ -120,7 +121,7 @@ void main()
 			float queueDistance;
 			int queueTriangle = traceBvh(s_queueOrigin[thread].xyz, s_queueDirection[thread].xyz
 				, kMaxBvhRayDistance, false, queueDistance);
-			s_queueResult[thread] = vec2(float(queueTriangle), queueDistance);
+			s_queueOrigin[thread] = vec4(float(queueTriangle), queueDistance, 0.0, 0.0);
 		}
 		GROUP_SYNC();
 		if (thread == 0)
@@ -129,7 +130,7 @@ void main()
 		}
 		if (needBvh)
 		{
-			vec2 result = s_queueResult[slot];
+			vec2 result = s_queueOrigin[slot].xy;
 			int triangleIndex = int(result.x);
 			if (triangleIndex >= 0)
 			{

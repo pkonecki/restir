@@ -224,15 +224,14 @@ void restirSpatial(vec2 v_texcoord0, out vec4 o_color, out vec4 o_moments)
 	o_moments = vec4(moments, historyLength, 0.0);
 }
 
-// A compute shader, in groups of 8x8 pixels (compute.sh), so that the BVH
-// traversal keeps its stack in shared memory (bvh.sh).
+// A compute shader, in groups of 8x8 pixels (compute.sh). Its BVH rays are
+// visibility rays, which need no traversal stack (bvh.sh).
 IMAGE2D_WO(o_colorImage, rgba16f, 12);
 IMAGE2D_WO(o_momentsImage, rgba16f, 13);
 
 NUM_THREADS(kGroupSize, kGroupSize, 1)
 void main()
 {
-	g_bvhThread = int(gl_LocalInvocationIndex);
 	ivec2 pixel = computePixel(gl_GlobalInvocationID);
 	if (!insideImage(pixel, u_screenInfo.xy))
 	{

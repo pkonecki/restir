@@ -155,8 +155,8 @@ void diTemporal(vec2 v_texcoord0, ivec2 _pixel, out vec4 o_sample, out vec4 o_re
 	o_normal = vec4(surface.normal, canonicalCount + temporalCount);
 }
 
-// A compute shader, in groups of 8x8 pixels (compute.sh), so that the BVH
-// traversal keeps its stack in shared memory (bvh.sh).
+// A compute shader, in groups of 8x8 pixels (compute.sh). Its BVH rays are
+// visibility rays, which need no traversal stack (bvh.sh).
 IMAGE2D_WO(o_sampleImage, rgba32f, 7);
 IMAGE2D_WO(o_receiverImage, rgba32f, 8);
 IMAGE2D_WO(o_normalImage, rgba16f, 9);
@@ -164,7 +164,6 @@ IMAGE2D_WO(o_normalImage, rgba16f, 9);
 NUM_THREADS(kGroupSize, kGroupSize, 1)
 void main()
 {
-	g_bvhThread = int(gl_LocalInvocationIndex);
 	ivec2 pixel = computePixel(gl_GlobalInvocationID);
 	if (!insideImage(pixel, u_screenSize.xy))
 	{

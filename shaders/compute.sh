@@ -2,15 +2,21 @@
  * Shared code of the ReSTIR compute passes (cs_restir_*.sc, cs_di_*.sc).
  *
  * Each runs in groups of 8x8 threads, one per pixel. Include this file before
- * restir.sh or di.sh: it gives the BVH traversal its stack in shared memory
- * (bvh.sh). Define, before including it:
+ * restir.sh or di.sh. Define, before including it:
  *
+ *   BVH_SHARED_STACK     as kGroupThreads, for closest-hit BVH rays with a
+ *                        short traversal stack in shared memory (bvh.sh)
  *   COMPUTE_GROUP_SUM    for groupSum(), a sum over the group
  *   COMPUTE_GROUP_QUEUE  for queueSlot() and s_queueCount, slots in a queue
  *                        in shared memory
  *
  * Every thread of the group must call groupSum() and every GROUP_SYNC(),
  * including threads outside the image: they are barriers.
+ *
+ * Shared memory is what limits how many groups run at once on a GPU (2 of 16
+ * waves per SIMD in GI temporal with a 40-entry BVH stack per thread, in
+ * Radeon GPU Profiler), so keep it small: the GI temporal pass uses about
+ * 4.5 KB per group.
  *
  * Wave intrinsics: shaders compiled with RESTIR_WAVE_OPS (the *_wave
  * variants, SPIR-V 1.3 for Vulkan only; see CMakeLists.txt and the "Wave
@@ -25,7 +31,6 @@
 
 #define kGroupSize 8     // threads along x and y
 #define kGroupThreads 64 // kGroupSize * kGroupSize
-#define BVH_SHARED_STACK 64
 
 #if BGFX_SHADER_LANGUAGE_GLSL
 #	define GROUP_SYNC() memoryBarrierShared(); barrier()
