@@ -49,6 +49,12 @@ std::string CaptureCallback::lastResult() const
 void CaptureCallback::fatal(const char* _filePath, uint16_t _line, bgfx::Fatal::Enum _code, const char* _str)
 {
 	std::fprintf(stderr, "%s (%d): BGFX FATAL 0x%08x: %s\n", _filePath, _line, unsigned(_code), _str);
+	std::fflush(stderr); // before abort() discards it
+#if BX_PLATFORM_EMSCRIPTEN
+	// stderr does not always reach the page when bgfx fails inside a WebGPU
+	// callback, so tell the console directly.
+	EM_ASM({ console.error('BGFX FATAL: ' + UTF8ToString($0)); }, _str);
+#endif
 	if (bgfx::Fatal::DebugCheck == _code)
 	{
 		bx::debugBreak();

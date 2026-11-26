@@ -6,12 +6,24 @@
 			"type": "cppvsdbg",
 			"request": "launch",
 			"program": "${workspaceFolder}\\build\\Debug\\restir_gi.exe",
-			"args": [],
+			"args": ["--vk"],
 			"stopAtEntry": false,
 			"cwd": "${workspaceFolder}\\build\\Debug",
 			"environment": [],
 			"console": "integratedTerminal",
 			"preLaunchTask": "Build ReSTIR GI"
+		},
+		{
+			"name": "Release ReSTIR GI",
+			"type": "cppvsdbg",
+			"request": "launch",
+			"program": "${workspaceFolder}\\build\\Release\\restir_gi.exe",
+			"args": ["--vk"],
+			"stopAtEntry": false,
+			"cwd": "${workspaceFolder}\\build\\Release",
+			"environment": [],
+			"console": "integratedTerminal",
+			"preLaunchTask": "Build ReSTIR GI (Release)"
 		}
 	]
 }

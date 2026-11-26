@@ -76,6 +76,11 @@ set(BGFX_SHADER_OUTPUT_DIR "${CMAKE_CURRENT_BINARY_DIR}/shaders")
 set(BGFX_SHADER_INCLUDE_PATH "${bgfx.cmake_SOURCE_DIR}/bgfx/src")
 set(BGFX_SHADER_COMMON_INCLUDE_PATH "${bgfx.cmake_SOURCE_DIR}/bgfx/examples/common")
 
+# The shared shader code. bgfx_compile_shaders only makes a shader depend on
+# its .sc file, so every shader is also made to depend on all of these:
+# otherwise editing one leaves stale binaries until their .sc files change.
+file(GLOB RESTIR_SHADER_INCLUDES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/shaders/*.sh")
+
 # Compiles shaders/<name>.sc for each name, for the given profiles (bgfx's
 # defaults if none), and appends the outputs to RESTIR_SHADER_BINARIES.
 function(restir_compile_shaders type)
@@ -94,6 +99,9 @@ function(restir_compile_shaders type)
 		INCLUDE_DIRS "${BGFX_SHADER_COMMON_INCLUDE_PATH}"
 		${profiles}
 	)
+	foreach(output IN LISTS outputs)
+		add_custom_command(OUTPUT "${output}" APPEND DEPENDS ${RESTIR_SHADER_INCLUDES})
+	endforeach()
 	set(RESTIR_SHADER_BINARIES ${RESTIR_SHADER_BINARIES} ${outputs} PARENT_SCOPE)
 endfunction()
 
@@ -102,14 +110,15 @@ restir_compile_shaders(VERTEX
 	SHADERS vs_scene vs_shadow vs_fullscreen
 	PROFILES ${RESTIR_SHADER_PROFILES})
 restir_compile_shaders(FRAGMENT
-	SHADERS fs_gbuffer fs_composite fs_shadow fs_svgf_variance fs_svgf_atrous
+	SHADERS fs_gbuffer fs_composite fs_shadow fs_svgf_variance fs_svgf_atrous fs_taa fs_reference
 	PROFILES ${RESTIR_SHADER_PROFILES})
 # Fragment shaders that read storage buffers need the compute profiles too.
 restir_compile_shaders(FRAGMENT
-	SHADERS fs_restir_temporal fs_restir_spatial fs_tonemap fs_debug
+	SHADERS fs_tonemap fs_debug fs_specular
 	PROFILES ${RESTIR_COMPUTE_PROFILES})
 restir_compile_shaders(COMPUTE
-	SHADERS cs_grid_clear cs_grid_insert cs_exposure
+	SHADERS cs_grid_clear cs_grid_insert cs_exposure cs_error
+		cs_restir_temporal cs_restir_spatial cs_di_temporal cs_di_spatial
 	PROFILES ${RESTIR_COMPUTE_PROFILES})
 
 # The runtime looks for <name>.bin, not <name>.sc.bin.
@@ -125,6 +134,46 @@ foreach(shader IN LISTS RESTIR_SHADER_BINARIES)
 	list(APPEND BGFX_RUNTIME_SHADERS "${runtime_shader}")
 endforeach()
 
+# Vulkan only: the ReSTIR compute passes again, with wave intrinsics
+# (RESTIR_WAVE_OPS, see shaders/compute.sh), as SPIR-V 1.3, which subgroup
+# operations need. The renderer loads them as <name>_wave from the spirv
+# directory. Each is compiled from a copy of its source (<name>_wave.sc): a
+# file can be the main dependency of only one custom command, and shaderc
+# needs main() in the file it is given, so an include would not do. The
+# copy's includes are found through the shaders directory.
+if(NOT EMSCRIPTEN)
+	set(RESTIR_WAVE_SOURCES)
+	foreach(shader cs_restir_temporal cs_restir_spatial cs_di_temporal cs_di_spatial)
+		configure_file("${CMAKE_CURRENT_SOURCE_DIR}/shaders/${shader}.sc"
+			"${CMAKE_CURRENT_BINARY_DIR}/wave_shaders/${shader}_wave.sc" COPYONLY)
+		list(APPEND RESTIR_WAVE_SOURCES "${CMAKE_CURRENT_BINARY_DIR}/wave_shaders/${shader}_wave.sc")
+	endforeach()
+	bgfx_compile_shaders(
+		TYPE COMPUTE
+		SHADERS ${RESTIR_WAVE_SOURCES}
+		VARYING_DEF "${CMAKE_CURRENT_SOURCE_DIR}/shaders/varying.def.sc"
+		OUTPUT_DIR "${BGFX_SHADER_OUTPUT_DIR}"
+		OUT_FILES_VAR wave_outputs
+		INCLUDE_DIRS "${CMAKE_CURRENT_SOURCE_DIR}/shaders" "${BGFX_SHADER_COMMON_INCLUDE_PATH}"
+		DEFINES RESTIR_WAVE_OPS
+		PROFILES spirv13-11
+	)
+	foreach(output IN LISTS wave_outputs)
+		add_custom_command(OUTPUT "${output}" APPEND DEPENDS ${RESTIR_SHADER_INCLUDES})
+		get_filename_component(name "${output}" NAME)
+		string(REGEX REPLACE "\\.sc\\.bin$" ".bin" name "${name}")
+		set(runtime_shader "${BGFX_SHADER_OUTPUT_DIR}/spirv/${name}")
+		add_custom_command(
+			OUTPUT "${runtime_shader}"
+			COMMAND ${CMAKE_COMMAND} -E make_directory "${BGFX_SHADER_OUTPUT_DIR}/spirv"
+			COMMAND ${CMAKE_COMMAND} -E copy_if_different "${output}" "${runtime_shader}"
+			DEPENDS "${output}"
+			VERBATIM
+		)
+		list(APPEND BGFX_RUNTIME_SHADERS "${runtime_shader}")
+	endforeach()
+endif()
+
 # Shader sources are listed so that IDEs show them.
 file(GLOB RESTIR_SHADER_SOURCES CONFIGURE_DEPENDS
 	"${CMAKE_CURRENT_SOURCE_DIR}/shaders/*.sc"
@@ -134,8 +183,12 @@ add_executable(restir_gi
 	src/main.cpp
 	src/bookmarks.cpp
 	src/bookmarks.h
+	src/bvh.cpp
+	src/bvh.h
 	src/camera.cpp
 	src/camera.h
+	src/lights.cpp
+	src/lights.h
 	src/capture.cpp
 	src/capture.h
 	src/renderer.cpp
@@ -143,6 +196,8 @@ add_executable(restir_gi
 	src/scene.cpp
 	src/scene.h
 	src/settings.h
+	src/share.cpp
+	src/share.h
 	src/ui.cpp
 	src/ui.h
 	${RESTIR_SHADER_SOURCES}
@@ -169,6 +224,9 @@ if(EMSCRIPTEN)
 		"-sENVIRONMENT=web"
 		"--shell-file=${CMAKE_CURRENT_SOURCE_DIR}/web/shell.html"
 		"--pre-js=${CMAKE_CURRENT_SOURCE_DIR}/web/webgpu_workarounds.js"
+		# The page writes dropped or fetched models into the file system and
+		# asks the example to load them (web/shell.html).
+		"-sEXPORTED_RUNTIME_METHODS=['ccall','FS','addRunDependency','removeRunDependency']"
 		"--preload-file=${BGFX_SHADER_OUTPUT_DIR}@shaders"
 		"--exclude-file=*.sc.bin"
 		"--preload-file=${CMAKE_CURRENT_SOURCE_DIR}/assets@assets"

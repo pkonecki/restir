@@ -51,6 +51,14 @@ struct SettingsWindowInput
 	const std::string& m_bookmarkError;
 	CameraPose m_cameraPose;
 	const std::string& m_screenshotResult;
+	Renderer::BvhStats m_bvhStats;
+	uint32_t m_lightCount;
+	uint32_t m_emissiveTriangles;
+	bool m_referenceAccumulating;
+	uint32_t m_referenceFrames;
+	Renderer::ReferenceMetrics m_referenceMetrics;
+	std::string m_shareString; // the settings and the view (share.h)
+	bool m_waveIntrinsicsAvailable; // the renderer is Vulkan and has the wave variants
 };
 
 // What the window asks the application to do.
@@ -62,6 +70,8 @@ struct SettingsWindowOutput
 	bool m_addBookmark = false;
 	std::optional<std::size_t> m_goToBookmark;
 	std::optional<std::size_t> m_removeBookmark;
+	bool m_toggleReference = false;
+	bool m_clearReference = false;
 };
 
 // Draws the window. Settings change in place; the caller reacts to what

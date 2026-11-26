@@ -12,9 +12,7 @@
 #include <bgfx_compute.sh>
 #include "shaderlib.sh"
 
-#define GRID_CHECKSUM_STAGE 0
-#define GRID_COUNT_STAGE    1
-#define GRID_ENTRY_STAGE    2
+#define GRID_STAGE 0
 #include "hashgrid.sh"
 
 SAMPLER2D(s_normal, 3);

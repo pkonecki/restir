@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <cfloat>
+#include <vector>
 
 namespace
 {
@@ -138,6 +139,11 @@ SettingsWindowOutput drawSettingsWindow(const SettingsWindowInput& _input, Setti
 		ImGui::SetNextItemWidth(-FLT_MIN);
 		ImGui::InputText("##pose", pose, sizeof(pose), ImGuiInputTextFlags_ReadOnly);
 		ImGui::SetItemTooltip("This view, as --camera takes it (x,y,z,yaw,pitch).");
+		std::vector<char> share(_input.m_shareString.begin(), _input.m_shareString.end());
+		share.push_back('\0');
+		ImGui::SetNextItemWidth(-FLT_MIN);
+		ImGui::InputText("##share", share.data(), share.size(), ImGuiInputTextFlags_ReadOnly);
+		ImGui::SetItemTooltip("This view and every setting, as --settings takes it (the web\nbuild keeps it in the page address, so the link reproduces it).");
 
 		ImGui::SeparatorText("Screenshot");
 		if (ImGui::Button("Save screenshot (P)"))
@@ -182,6 +188,43 @@ SettingsWindowOutput drawSettingsWindow(const SettingsWindowInput& _input, Setti
 			ImGui::SliderFloat("Orbit radius", &light.orbitRadius, 0.0f, 1.0f, "%.2f scene radii", sliderFlags);
 			ImGui::SliderFloat("Orbit speed", &light.orbitSpeed, -2.0f, 2.0f, "%.2f rad/s", sliderFlags);
 		}
+
+		ImGui::SeparatorText("Extra lights");
+		ImGui::BeginDisabled(_settings.directLighting != int(DirectLighting::ReStirDi));
+		ImGui::SliderInt("Count", &light.extraLights, 0, 1024, "%d", sliderFlags | ImGuiSliderFlags_Logarithmic);
+		ImGui::SetItemTooltip("Coloured point lights scattered through the scene, sampled with\nReSTIR DI and shadowed through the BVH (the main light keeps its\nshadow map). The light list holds %u lights now, %u of them\nemissive triangles.", _input.m_lightCount, _input.m_emissiveTriangles);
+		if (light.extraLights > 0)
+		{
+			ImGui::SliderFloat("Each", &light.extraIntensity, 0.01f, 10.0f, "x%.2f", sliderFlags | ImGuiSliderFlags_Logarithmic);
+			ImGui::SetItemTooltip("Intensity of each extra light, relative to the main light's default.");
+			ImGui::SameLine();
+			if (ImGui::Button("Scatter again"))
+			{
+				++light.extraSeed;
+			}
+		}
+		ImGui::EndDisabled();
+	}
+
+	if (ImGui::CollapsingHeader("Sky", ImGuiTreeNodeFlags_DefaultOpen))
+	{
+		SkySettings& sky = _settings.sky;
+		ImGui::Checkbox("Sky (K)", &sky.enabled);
+		ImGui::SetItemTooltip("Light from a sky gradient, through GI rays the BVH confirms leave\nthe scene (so not with depth buffer rays only), and shown behind it.");
+		if (sky.enabled)
+		{
+			ImGui::SameLine();
+			ImGui::SetNextItemWidth(-FLT_MIN);
+			ImGui::SliderFloat("##skyIntensity", &sky.intensity, 0.01f, 20.0f, "intensity %.2f"
+				, sliderFlags | ImGuiSliderFlags_Logarithmic);
+			ImGui::ColorEdit3("Zenith", sky.zenith, ImGuiColorEditFlags_Float);
+			ImGui::ColorEdit3("Horizon", sky.horizon, ImGuiColorEditFlags_Float);
+			ImGui::ColorEdit3("Ground", sky.ground, ImGuiColorEditFlags_Float);
+			if (_settings.rayMode == int(RayMode::ScreenSpace))
+			{
+				ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.3f, 1.0f), "Depth buffer rays cannot reach the sky.");
+			}
+		}
 	}
 
 	if (ImGui::CollapsingHeader("Rendering", ImGuiTreeNodeFlags_DefaultOpen))
@@ -190,14 +233,40 @@ SettingsWindowOutput drawSettingsWindow(const SettingsWindowInput& _input, Setti
 		ImGui::SetItemTooltip("Feed last frame's indirect light back into the samples.");
 		ImGui::Checkbox("Shadows (H)", &_settings.shadows);
 		ImGui::Checkbox("Denoiser (N)", &_settings.denoiser);
+		ImGui::SameLine();
+		ImGui::Checkbox("TAA", &_settings.taa);
+		ImGui::SetItemTooltip("Temporal anti-aliasing: each frame is rendered with a different\nsub-pixel offset, and the frames are blended over time.");
+		ImGui::Checkbox("Specular GI", &_settings.specularGi);
+		ImGui::SetItemTooltip("Glossy reflections: one GGX ray per GI pixel, traced like the GI\nrays and shaded from last frame's image where it hits a visible\nsurface, accumulated over a few frames.");
 		ImGui::Checkbox("Emissive lighting (E)", &_settings.emissiveLighting);
-		ImGui::SetItemTooltip("Emissive surfaces light the scene through GI. Like all GI here,\nonly the emitters visible on screen contribute.");
+		ImGui::SetItemTooltip("Emissive surfaces light the scene.");
+		ImGui::Combo("Direct lighting", &_settings.directLighting, kDirectLightingNames, int(DirectLighting::Count));
+		ImGui::SetItemTooltip("How emitters and the extra lights light the scene.\nReSTIR DI: their light is sampled with reservoirs at full resolution\nand shadowed through the BVH; GI adds the light they bounce.\nThrough GI only: emitters light the scene only through the GI rays\nthat happen to hit them (noisier, and only emitters the rays reach).");
+		ImGui::Combo("Rays (R)", &_settings.rayMode, kRayModeNames, int(RayMode::Count));
+		ImGui::SetItemTooltip("Depth buffer: rays only find what is on screen.\nThen BVH: rays the depth buffer cannot answer (off screen, or\nbehind what it shows) are traced through the scene's BVH.\nBVH only: every ray and visibility test is.\n\nBVH: %u triangles, %u nodes, depth %u, built in %.0f ms."
+			, _input.m_bvhStats.m_triangles, _input.m_bvhStats.m_nodes, _input.m_bvhStats.m_depth, _input.m_bvhStats.m_buildMs);
+		ImGui::BeginDisabled(!_input.m_waveIntrinsicsAvailable);
+		bool waveIntrinsics = _settings.waveIntrinsics && _input.m_waveIntrinsicsAvailable;
+		if (ImGui::Checkbox("Wave intrinsics", &waveIntrinsics))
+		{
+			_settings.waveIntrinsics = waveIntrinsics;
+		}
+		ImGui::EndDisabled();
+		ImGui::SetItemTooltip("Vulkan only. The ReSTIR passes' variants with wave (subgroup)\noperations: the queue of BVH rays takes one atomic per wave instead\nof one per ray, the boiling filter's tile mean is a wave sum, and\nvisibility rays traverse the BVH in step across the wave, each node\nread once for all its lanes. Compare the ReSTIR timings below with\nand without.%s"
+			, _input.m_waveIntrinsicsAvailable ? "" : "\n\nNot available with this renderer.");
 		int reuse = _settings.worldSpaceReuse ? 0 : 1;
 		if (ImGui::Combo("Reuse (G)", &reuse, "World-space hash grid\0Screen-space\0"))
 		{
 			_settings.worldSpaceReuse = reuse == 0;
 		}
 		ImGui::SetItemTooltip("Where reservoirs are reused from.");
+		ImGui::Checkbox("Clamp Jacobian", &_settings.clampJacobian);
+		ImGui::SetItemTooltip("Cap the reconnection Jacobian at %.0f: bounds the weight a sample\ngains when reused across a large change in distance or angle\n(near corners), which keeps such samples from lingering in the\ntemporal reuse. It darkens those spots slightly (biased).", kJacobianClamp);
+		ImGui::SameLine();
+		ImGui::Checkbox("Clamp outliers", &_settings.clampOutliers);
+		ImGui::SetItemTooltip("Cap each pixel's estimate at %.0f before accumulation, as the\nexample always did: fewer fireflies, at the cost of losing some\nlight (biased).", kOutlierClamp);
+		ImGui::Checkbox("Boiling filter", &_settings.boilingFilter);
+		ImGui::SetItemTooltip("Limit each temporal reservoir's estimate to %.0f times what its pixel\nshowed last frame (or its fresh candidates show now). Without it, rare\noverweighted samples feed back through temporal reuse and multiple\nbounces, and the light slowly spreads from corners. Slightly biased.", kBoilingFilter);
 
 		ImGui::Combo("View (V)", &_settings.debugView, kDebugViewNames, int(DebugView::Count));
 		ImGui::SetItemTooltip("%s", kDebugViewHelp[_settings.debugView]);
@@ -218,6 +287,48 @@ SettingsWindowOutput drawSettingsWindow(const SettingsWindowInput& _input, Setti
 			ImGui::SliderFloat("##adaptationSpeed", &_settings.adaptationSpeed, 0.1f, 10.0f, "adapt %.1f/s"
 				, sliderFlags | ImGuiSliderFlags_Logarithmic);
 			ImGui::SetItemTooltip("How fast the exposure follows the scene.");
+		}
+	}
+
+	if (ImGui::CollapsingHeader("Reference"))
+	{
+		if (ImGui::Button(_input.m_referenceAccumulating ? "Stop accumulating" : "Accumulate reference"))
+		{
+			output.m_toggleReference = true;
+		}
+		ImGui::SetItemTooltip("Average frames of this view with every biased shortcut off (no\nreuse, denoiser, TAA or clamps; the camera still jitters): the\nunbiased image of the same rays. Moving the camera or the light\nstarts it again. Stop it to compare the live image against it.");
+		ImGui::SameLine();
+		ImGui::BeginDisabled(_input.m_referenceFrames == 0);
+		if (ImGui::Button("Clear"))
+		{
+			output.m_clearReference = true;
+		}
+		ImGui::EndDisabled();
+		ImGui::SameLine();
+		ImGui::Text("%u frames", _input.m_referenceFrames);
+
+		ImGui::BeginDisabled(_input.m_referenceFrames == 0);
+		ImGui::RadioButton("Image", &_settings.referenceView, 0);
+		ImGui::SameLine();
+		ImGui::RadioButton("Reference", &_settings.referenceView, 1);
+		ImGui::SameLine();
+		ImGui::RadioButton("Error", &_settings.referenceView, 2);
+		ImGui::SetItemTooltip("Relative error in luminance against the reference: green none,\nblue darker and red brighter, saturating at 50%%.");
+		ImGui::EndDisabled();
+
+		const Renderer::ReferenceMetrics& metrics = _input.m_referenceMetrics;
+		if (_input.m_referenceAccumulating)
+		{
+			ImGui::TextDisabled("Accumulating; stop to compare.");
+		}
+		else if (metrics.m_valid)
+		{
+			ImGui::Text("Relative MSE %.5f   bias %+.2f%%", metrics.m_relativeMse, 100.0f * metrics.m_bias);
+			ImGui::SetItemTooltip("Of the displayed image (after TAA, before tone mapping) against\nthe reference, in luminance, over the pixels that show the scene.\nBias: mean brightness relative to the reference's.");
+		}
+		else if (_input.m_referenceFrames > 0)
+		{
+			ImGui::TextDisabled("Measuring...");
 		}
 	}
 
@@ -288,10 +399,14 @@ SettingsWindowOutput drawSettingsWindow(const SettingsWindowInput& _input, Setti
 		ImGui::SetItemTooltip("A-trous passes; each one doubles the filter radius.");
 		ImGui::SliderInt("Rays per pixel", &_settings.initialCandidates, 1, 8, "%d", sliderFlags);
 		ImGui::SetItemTooltip("Fresh candidates traced each frame in the temporal pass.");
-		ImGui::SliderInt("Temporal taps", &_settings.temporalTaps, 1, 4, "%d", sliderFlags);
-		ImGui::SetItemTooltip("Reservoirs reused from last frame.");
-		ImGui::SliderInt("Spatial taps", &_settings.spatialTaps, 1, 8, "%d", sliderFlags);
-		ImGui::SetItemTooltip("Reservoirs reused from this frame, each with a visibility ray.");
+		ImGui::SliderInt("Temporal taps", &_settings.temporalTaps, 0, 4, "%d", sliderFlags);
+		ImGui::SetItemTooltip("Reservoirs reused from last frame (0: no temporal reuse).");
+		ImGui::SliderInt("Spatial taps", &_settings.spatialTaps, 0, 8, "%d", sliderFlags);
+		ImGui::SetItemTooltip("Reservoirs reused from this frame, each with a visibility ray\n(0: no spatial reuse; 0 and 0 give plain, unbiased Monte Carlo).");
+		ImGui::SliderInt("DI candidates", &_settings.diCandidates, 1, 32, "%d", sliderFlags);
+		ImGui::SetItemTooltip("Fresh light samples per pixel per frame in ReSTIR DI.");
+		ImGui::SliderInt("DI spatial taps", &_settings.diSpatialTaps, 0, 8, "%d", sliderFlags);
+		ImGui::SetItemTooltip("Neighbouring reservoirs reused in ReSTIR DI, each with a shadow ray.");
 		ImGui::SliderInt("Ray march steps", &_settings.traceSteps, 8, 64, "%d", sliderFlags);
 		ImGui::SetItemTooltip("Depth buffer steps per ray. Rays reach as far with fewer,\ncoarser steps, but miss thin geometry.");
 
@@ -305,6 +420,8 @@ SettingsWindowOutput drawSettingsWindow(const SettingsWindowInput& _input, Setti
 			_settings.temporalTaps = defaults.temporalTaps;
 			_settings.spatialTaps = defaults.spatialTaps;
 			_settings.traceSteps = defaults.traceSteps;
+			_settings.diCandidates = defaults.diCandidates;
+			_settings.diSpatialTaps = defaults.diSpatialTaps;
 			_settings.vsync = defaults.vsync;
 		}
 	}

@@ -54,7 +54,7 @@ void main()
 	s_count[index] = count;
 	barrier();
 
-	for (int stride = kThreads / 2; stride > 0; stride /= 2)
+	for (int stride = kThreads / 2; stride > 0; stride >>= 1) // a shift: D3D warns about signed divides
 	{
 		if (index < stride)
 		{

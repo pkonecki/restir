@@ -95,6 +95,8 @@ struct SceneInfo
 	bx::Vec3 m_center = { 0.0f, 0.0f, 0.0f };
 	float m_radius = 1.0f;
 	bx::Vec3 m_lightPosition = { 0.0f, 0.0f, 0.0f };
+	bx::Vec3 m_boundsMin = { 0.0f, 0.0f, 0.0f };
+	bx::Vec3 m_boundsMax = { 0.0f, 0.0f, 0.0f };
 };
 
 // Loads the default scene of a glTF file. Throws std::runtime_error with a

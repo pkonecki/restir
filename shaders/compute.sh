@@ -1,0 +1,123 @@
+/*
+ * Shared code of the ReSTIR compute passes (cs_restir_*.sc, cs_di_*.sc).
+ *
+ * Each runs in groups of kGroupSizeX x kGroupSizeY threads, one per pixel
+ * (kComputeGroupSizeX/Y in src/renderer.cpp must match). Include this file before
+ * restir.sh or di.sh. Define, before including it:
+ *
+ *   BVH_SHARED_STACK     as kGroupThreads, for closest-hit BVH rays with a
+ *                        short traversal stack in shared memory (bvh.sh)
+ *   COMPUTE_GROUP_SUM    for groupSum(), a sum over the group
+ *   COMPUTE_GROUP_QUEUE  for queueSlot() and s_queueCount, slots in a queue
+ *                        in shared memory
+ *
+ * Every thread of the group must call groupSum() and every GROUP_SYNC(),
+ * including threads outside the image: they are barriers.
+ *
+ * Shared memory is what limits how many groups run at once on a GPU (2 of 16
+ * waves per SIMD in GI temporal with a 40-entry BVH stack per thread, in
+ * Radeon GPU Profiler, with 8x8 groups), so keep it small: the GI temporal
+ * pass uses about 72 bytes per thread (BVH stack, queue and group sum).
+ *
+ * Wave intrinsics: shaders compiled with RESTIR_WAVE_OPS (the *_wave
+ * variants, SPIR-V 1.3 for Vulkan only; see CMakeLists.txt and the "Wave
+ * intrinsics" setting) use the HLSL Shader Model 6 wave operations, which
+ * bgfx's shader compiler (glslang's HLSL front end) turns into Vulkan subgroup
+ * operations. They assume that a group's waves are made of consecutive
+ * threads (gl_LocalInvocationIndex), as on every GPU we know of.
+ */
+
+#ifndef COMPUTE_SH_HEADER_GUARD
+#define COMPUTE_SH_HEADER_GUARD
+
+#define kGroupSizeX 4    // threads along x
+#define kGroupSizeY 8    // threads along y
+#define kGroupThreads 32 // kGroupSizeX * kGroupSizeY, a power of two (groupSum's tree reduction)
+
+#if BGFX_SHADER_LANGUAGE_GLSL
+#	define GROUP_SYNC() memoryBarrierShared(); barrier()
+#else
+#	define GROUP_SYNC() GroupMemoryBarrierWithGroupSync()
+#endif
+
+// The pixel of this thread, and whether it lies in an image of _size pixels.
+ivec2 computePixel(uvec3 _globalId)
+{
+	return ivec2(int(_globalId.x), int(_globalId.y));
+}
+
+bool insideImage(ivec2 _pixel, vec2 _size)
+{
+	return _pixel.x < int(_size.x) && _pixel.y < int(_size.y);
+}
+
+#ifdef COMPUTE_GROUP_SUM
+SHARED vec2 s_groupSum[kGroupThreads];
+
+// The sum of _value over the group's threads (_thread: gl_LocalInvocationIndex).
+vec2 groupSum(vec2 _value, int _thread)
+{
+#	ifdef RESTIR_WAVE_OPS
+	// One sum per wave, then the waves' sums.
+	vec2 waveSum = WaveActiveSum(_value);
+	int laneCount = int(WaveGetLaneCount());
+	if (WaveIsFirstLane())
+	{
+		s_groupSum[_thread / laneCount] = waveSum;
+	}
+	GROUP_SYNC();
+	vec2 total = vec2_splat(0.0);
+	// Rounded up: a group may be smaller than one wave.
+	int waveCount = (kGroupThreads + laneCount - 1) / laneCount;
+	for (int wave = 0; wave < waveCount; ++wave)
+	{
+		total += s_groupSum[wave];
+	}
+#	else
+	// A tree reduction in shared memory.
+	s_groupSum[_thread] = _value;
+	GROUP_SYNC();
+	for (int stride = kGroupThreads >> 1; stride > 0; stride >>= 1)
+	{
+		if (_thread < stride)
+		{
+			s_groupSum[_thread] += s_groupSum[_thread + stride];
+		}
+		GROUP_SYNC();
+	}
+	vec2 total = s_groupSum[0];
+#	endif
+	GROUP_SYNC(); // before s_groupSum is written again
+	return total;
+}
+#endif // COMPUTE_GROUP_SUM
+
+#ifdef COMPUTE_GROUP_QUEUE
+SHARED uint s_queueCount;
+
+// A slot in the group's queue for each thread that pushes; meaningless for
+// the others. Thread 0 resets s_queueCount, between GROUP_SYNC()s.
+uint queueSlot(bool _push)
+{
+#	ifdef RESTIR_WAVE_OPS
+	// One atomic per wave: the wave's pushing lanes take consecutive slots.
+	uint offset = WavePrefixCountBits(_push);
+	uint count = WaveActiveCountBits(_push);
+	uint base = 0u;
+	if (WaveIsFirstLane())
+	{
+		atomicFetchAndAdd(s_queueCount, count, base);
+	}
+	return WaveReadLaneFirst(base) + offset;
+#	else
+	uint slot = 0u;
+	if (_push)
+	{
+		atomicFetchAndAdd(s_queueCount, 1u, slot);
+	}
+	return slot;
+#	endif
+}
+#endif // COMPUTE_GROUP_QUEUE
+
+#endif // COMPUTE_SH_HEADER_GUARD

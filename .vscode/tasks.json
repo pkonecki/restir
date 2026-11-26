@@ -49,6 +49,29 @@
 			"problemMatcher": [
 				"$msCompile"
 			]
+		},
+		{
+			"label": "Build ReSTIR GI (Release)",
+			"type": "process",
+			"command": "cmd.exe",
+			"args": [
+				"/d",
+				"/c",
+				"${workspaceFolder}\\.vscode\\msvc.cmd",
+				"cmake",
+				"--build",
+				"${workspaceFolder}\\build",
+				"--config",
+				"Release",
+				"--target",
+				"restir_gi"
+			],
+			"dependsOn": "Configure CMake",
+			"dependsOrder": "sequence",
+			"group": "build",
+			"problemMatcher": [
+				"$msCompile"
+			]
 		}
 	]
 }
