@@ -1,5 +1,7 @@
 # ReSTIR GI
 
+![The Sponza atrium rendered with ReSTIR GI](docs/screenshot.webp)
+
 A C++ ReSTIR global illumination example using bgfx. It loads a glTF scene
 using fastgltf (by default the bundled open-front Cornell box), then renders it
 with a deferred PBR pipeline and ReSTIR GI whose reservoirs are reused
