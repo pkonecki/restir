@@ -87,6 +87,10 @@ constexpr uint32_t kErrorInterval = 30;
 // Cap on the M of every reused reservoir (kMaxHistory in shaders/restir.sh).
 constexpr int kMaxReusedHistory = 20;
 
+// Threads along x and y of a ReSTIR compute group (kGroupSizeX/Y in shaders/compute.sh).
+constexpr uint32_t kComputeGroupSizeX = 4;
+constexpr uint32_t kComputeGroupSizeY = 8;
+
 // Buffer stages of the grid, in the compute passes and in the GI passes.
 constexpr uint8_t kGridComputeStage = 0;
 constexpr uint8_t kGridFragmentStage = 11;
@@ -514,11 +518,11 @@ void Renderer::render(const FrameInput& _input, const Settings& _requestedSettin
 
 	const uint16_t giWidth = uint16_t(std::max(1u, width / m_targetGiDivisor));
 	const uint16_t giHeight = uint16_t(std::max(1u, height / m_targetGiDivisor));
-	// The ReSTIR compute passes run in groups of 8x8 pixels, with or without
-	// wave intrinsics.
+	// The ReSTIR compute passes run in groups of kComputeGroupSizeX x
+	// kComputeGroupSizeY pixels, with or without wave intrinsics.
 	const bool wave = _settings.waveIntrinsics && m_waveProgramsValid;
-	const uint32_t giGroupsX = (uint32_t(giWidth) + 7) / 8;
-	const uint32_t giGroupsY = (uint32_t(giHeight) + 7) / 8;
+	const uint32_t giGroupsX = (uint32_t(giWidth) + kComputeGroupSizeX - 1) / kComputeGroupSizeX;
+	const uint32_t giGroupsY = (uint32_t(giHeight) + kComputeGroupSizeY - 1) / kComputeGroupSizeY;
 
 	// Shadow pass: the scene from the light, once per cube face. Each face
 	// covers slightly more than 90 degrees so that the border texels exist.
@@ -650,8 +654,8 @@ void Renderer::render(const FrameInput& _input, const Settings& _requestedSettin
 			bgfx::setUniform(m_diInfoUniform, diInfo);
 			bgfx::setUniform(m_screenSizeUniform, screenSize);
 		};
-		const uint32_t diGroupsX = (width + 7) / 8;
-		const uint32_t diGroupsY = (height + 7) / 8;
+		const uint32_t diGroupsX = (width + kComputeGroupSizeX - 1) / kComputeGroupSizeX;
+		const uint32_t diGroupsY = (height + kComputeGroupSizeY - 1) / kComputeGroupSizeY;
 
 		bgfx::setMarker("ReSTIR DI Temporal");
 		bgfx::setViewName(kDiTemporalView, "ReSTIR DI Temporal");

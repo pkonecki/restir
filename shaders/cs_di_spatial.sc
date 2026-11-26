@@ -152,7 +152,7 @@ void diSpatial(vec2 v_texcoord0, ivec2 _pixel, out vec4 o_diffuse, out vec4 o_sp
 IMAGE2D_WO(o_diffuseImage, rgba16f, 7);
 IMAGE2D_WO(o_specularImage, rgba16f, 8);
 
-NUM_THREADS(kGroupSize, kGroupSize, 1)
+NUM_THREADS(kGroupSizeX, kGroupSizeY, 1)
 void main()
 {
 	ivec2 pixel = computePixel(gl_GlobalInvocationID);

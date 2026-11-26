@@ -161,7 +161,7 @@ IMAGE2D_WO(o_sampleImage, rgba32f, 7);
 IMAGE2D_WO(o_receiverImage, rgba32f, 8);
 IMAGE2D_WO(o_normalImage, rgba16f, 9);
 
-NUM_THREADS(kGroupSize, kGroupSize, 1)
+NUM_THREADS(kGroupSizeX, kGroupSizeY, 1)
 void main()
 {
 	ivec2 pixel = computePixel(gl_GlobalInvocationID);

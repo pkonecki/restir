@@ -36,7 +36,7 @@
 
 #define COMPUTE_GROUP_SUM
 #define COMPUTE_GROUP_QUEUE
-#define BVH_SHARED_STACK 64 // kGroupThreads
+#define BVH_SHARED_STACK kGroupThreads // defined in compute.sh, expanded in bvh.sh
 #include "compute.sh"
 
 SAMPLER2D(s_historySample, 3); // last frame's sample position + M
@@ -54,7 +54,7 @@ IMAGE2D_WO(o_normal, rgba32f, 10);
 SHARED vec4 s_queueOrigin[kGroupThreads];
 SHARED vec4 s_queueDirection[kGroupThreads];
 
-NUM_THREADS(kGroupSize, kGroupSize, 1)
+NUM_THREADS(kGroupSizeX, kGroupSizeY, 1)
 void main()
 {
 	int thread = int(gl_LocalInvocationIndex);

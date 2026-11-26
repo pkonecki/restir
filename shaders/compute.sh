@@ -1,7 +1,8 @@
 /*
  * Shared code of the ReSTIR compute passes (cs_restir_*.sc, cs_di_*.sc).
  *
- * Each runs in groups of 8x8 threads, one per pixel. Include this file before
+ * Each runs in groups of kGroupSizeX x kGroupSizeY threads, one per pixel
+ * (kComputeGroupSizeX/Y in src/renderer.cpp must match). Include this file before
  * restir.sh or di.sh. Define, before including it:
  *
  *   BVH_SHARED_STACK     as kGroupThreads, for closest-hit BVH rays with a
@@ -15,8 +16,8 @@
  *
  * Shared memory is what limits how many groups run at once on a GPU (2 of 16
  * waves per SIMD in GI temporal with a 40-entry BVH stack per thread, in
- * Radeon GPU Profiler), so keep it small: the GI temporal pass uses about
- * 4.5 KB per group.
+ * Radeon GPU Profiler, with 8x8 groups), so keep it small: the GI temporal
+ * pass uses about 72 bytes per thread (BVH stack, queue and group sum).
  *
  * Wave intrinsics: shaders compiled with RESTIR_WAVE_OPS (the *_wave
  * variants, SPIR-V 1.3 for Vulkan only; see CMakeLists.txt and the "Wave
@@ -29,8 +30,9 @@
 #ifndef COMPUTE_SH_HEADER_GUARD
 #define COMPUTE_SH_HEADER_GUARD
 
-#define kGroupSize 8     // threads along x and y
-#define kGroupThreads 64 // kGroupSize * kGroupSize
+#define kGroupSizeX 4    // threads along x
+#define kGroupSizeY 8    // threads along y
+#define kGroupThreads 32 // kGroupSizeX * kGroupSizeY, a power of two (groupSum's tree reduction)
 
 #if BGFX_SHADER_LANGUAGE_GLSL
 #	define GROUP_SYNC() memoryBarrierShared(); barrier()
@@ -65,7 +67,9 @@ vec2 groupSum(vec2 _value, int _thread)
 	}
 	GROUP_SYNC();
 	vec2 total = vec2_splat(0.0);
-	for (int wave = 0; wave < kGroupThreads / laneCount; ++wave)
+	// Rounded up: a group may be smaller than one wave.
+	int waveCount = (kGroupThreads + laneCount - 1) / laneCount;
+	for (int wave = 0; wave < waveCount; ++wave)
 	{
 		total += s_groupSum[wave];
 	}
